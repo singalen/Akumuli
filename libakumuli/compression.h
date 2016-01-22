@@ -491,8 +491,12 @@ struct CompressionUtil {
     static void delta_decode(uint64_t* input, size_t input_size);
 
     /** Compress list of sorted integers using variable length encoding.
-     */
-    static size_t compress_sorted( void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size);
+      */
+    static size_t compress_sorted(void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size);
+
+    /** Decompress list of sorted integers using variable length encoding.
+      */
+    static void decompress_sorted(const void* buffer, size_t buffer_size, uint64_t* output, size_t output_size);
 };
 
 // Length -> RLE -> Base128

@@ -234,7 +234,7 @@ void CompressionUtil::delta_encode(uint64_t* input, size_t input_size) {
         // No modifications needed
         return;
     }
-    for (int i = 4; i < input_size; i++) {
+    for (size_t i = 4; i < input_size; i++) {
         input[i] = input[i] - input[i - 4];
     }
 }
@@ -245,20 +245,20 @@ void CompressionUtil::delta_decode(uint64_t* input, size_t input_size) {
         // No modifications needed
         return;
     }
-    for (int i = 4; i < input_size; i++) {
+    for (size_t i = 4; i < input_size; i++) {
         input[i] = input[i] + input[i - 4];
     }
 }
 
 
-struct InputWriter {
+struct IntEncoder {
     unsigned char* outbuf;  // output buffer
     size_t size;            // size of the output buffer
     size_t pos;             // position in output buffer
     unsigned char ctrl;     // control byte
     size_t ctrl_cnt;        // number of control bytes written
 
-    InputWriter(unsigned char* out, size_t outsize)
+    IntEncoder(unsigned char* out, size_t outsize)
         : outbuf(out)
         , size(outsize / 8 * 8)
         , pos(0)
@@ -278,6 +278,10 @@ struct InputWriter {
         }
     }
 
+    size_t get_size() const {
+        return ctrl_cnt + pos;
+    }
+
     void flush() {
         // write control byte
         outbuf[ctrl_cnt + pos - 8] = ctrl;
@@ -292,8 +296,53 @@ struct InputWriter {
     }
 };
 
+
+struct IntDecoder {
+    const unsigned char* input;
+    const size_t size;
+    size_t pos;
+    int bit_index;
+    unsigned char ctrl;
+    size_t nctrl;
+
+    IntDecoder(const unsigned char* input, size_t size)
+        : input(input)
+        , size(size)
+        , pos(0)
+        , bit_index(0)
+        , nctrl(1)
+    {
+        assert(size);
+        ctrl = input[0];
+    }
+
+    //! Get next value
+    uint64_t get() {
+        // naive implementation
+        uint64_t result = 0;
+        int shift = 0;
+        do {
+            result |= input[nctrl + pos] << shift;
+            pos++;
+            shift += 8;
+            if (pos % 8) {
+                next();
+            }
+        } while((ctrl & (1 << bit_index)) != 0);
+        return result;
+    }
+
+    //! Move to next 8byte block
+    void next() {
+        ctrl = input[nctrl + pos];
+        nctrl++;
+        bit_index = 1;
+    }
+};
+
+
 size_t CompressionUtil::compress_sorted( void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size) {
-    InputWriter out(reinterpret_cast<unsigned char*>(buffer), buffer_size);
+    IntEncoder encoder(reinterpret_cast<unsigned char*>(buffer), buffer_size);
     for (size_t i = 0u; i < input_size; i++) {
         uint64_t value = input[i];
         int leading_zeroes = 64;
@@ -302,13 +351,20 @@ size_t CompressionUtil::compress_sorted( void* buffer, size_t buffer_size, const
         }
         int nbytes = (64 - leading_zeroes) / 8;
         for (int i = 0; i < nbytes; i++) {
-            out.put(static_cast<unsigned char>(value & 0xFF));
+            encoder.put(static_cast<unsigned char>(value & 0xFF));
             value >>= 8;
         }
-        out.set_eov();
+        encoder.set_eov();
     }
+    return encoder.get_size();
 }
 
+void CompressionUtil::decompress_sorted(const void* buffer, size_t buffer_size, uint64_t* output, size_t output_size) {
+    IntDecoder decoder(reinterpret_cast<const unsigned char*>(buffer), buffer_size);
+    for (size_t i = 0; i < output_size; i++) {
+        output[i] = decoder.get();
+    }
+}
 
 /** NOTE:
   * Data should be ordered by paramid and timestamp.

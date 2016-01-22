@@ -282,3 +282,15 @@ void test_chunk_header_compression() {
 BOOST_AUTO_TEST_CASE(Test_chunk_compression) {
     test_chunk_header_compression();
 }
+
+BOOST_AUTO_TEST_CASE(Test_int_compression) {
+    uint64_t input[] = { 0, 1, 2 };
+    std::vector<uint8_t> buffer;
+    buffer.resize(0x1000);
+    size_t n = CompressionUtil::compress_sorted(buffer.data(), buffer.size(), input, 3);
+    uint64_t output[3];
+    CompressionUtil::decompress_sorted(buffer.data(), n, output, 3);
+    for(int i = 0; i < 3; i++) {
+        BOOST_REQUIRE_EQUAL(input[i], output[i]);
+    }
+}
