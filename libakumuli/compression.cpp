@@ -223,6 +223,93 @@ void CompressionUtil::decompress_doubles(Base128StreamReader&     rstream,
     }
 }
 
+
+void CompressionUtil::delta_encode(uint64_t* input, size_t input_size) {
+    /* First four values will be encoded as is. Next for will be relpaced
+     * with their difference with original foruth values - out[4] = input[4] - input[0],
+     * out[5] = input[5] - input[1], out[6] = input[6] - input[2], out[7] = input[7] - input[3].
+     * This algorithm can be vectorized in the future using SSE.
+     */
+    if (input_size < 5) {
+        // No modifications needed
+        return;
+    }
+    for (int i = 4; i < input_size; i++) {
+        input[i] = input[i] - input[i - 4];
+    }
+}
+
+
+void CompressionUtil::delta_decode(uint64_t* input, size_t input_size) {
+    if (input_size < 5) {
+        // No modifications needed
+        return;
+    }
+    for (int i = 4; i < input_size; i++) {
+        input[i] = input[i] + input[i - 4];
+    }
+}
+
+
+struct InputWriter {
+    unsigned char* outbuf;  // output buffer
+    size_t size;            // size of the output buffer
+    size_t pos;             // position in output buffer
+    unsigned char ctrl;     // control byte
+    size_t ctrl_cnt;        // number of control bytes written
+
+    InputWriter(unsigned char* out, size_t outsize)
+        : outbuf(out)
+        , size(outsize / 8 * 8)
+        , pos(0)
+        , ctrl(0)
+        , ctrl_cnt(1)
+    {
+    }
+
+    void put(unsigned char value) {
+        if (pos == size) {
+            throw StreamOutOfBounds("not enough space");
+        }
+        outbuf[ctrl_cnt + pos] = value;
+        pos++;
+        if (pos % 8 == 0) {
+            flush();
+        }
+    }
+
+    void flush() {
+        // write control byte
+        outbuf[ctrl_cnt + pos - 8] = ctrl;
+        ctrl_cnt++;
+    }
+
+    void set_eov() {
+        // set end of value in control byte
+        auto ctrl_pos = (pos - ctrl_cnt) % 8;
+        ctrl |= 1 << ctrl_pos;
+        ctrl_cnt++;
+    }
+};
+
+size_t CompressionUtil::compress_sorted( void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size) {
+    InputWriter out(reinterpret_cast<unsigned char*>(buffer), buffer_size);
+    for (size_t i = 0u; i < input_size; i++) {
+        uint64_t value = input[i];
+        int leading_zeroes = 64;
+        if (value) {
+            leading_zeroes = __builtin_clzl(value);
+        }
+        int nbytes = (64 - leading_zeroes) / 8;
+        for (int i = 0; i < nbytes; i++) {
+            out.put(static_cast<unsigned char>(value & 0xFF));
+            value >>= 8;
+        }
+        out.set_eov();
+    }
+}
+
+
 /** NOTE:
   * Data should be ordered by paramid and timestamp.
   * ------------------------------------------------

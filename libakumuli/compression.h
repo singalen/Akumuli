@@ -445,7 +445,7 @@ struct CompressionUtil {
       * @return current stage number
       */
     static
-    aku_Status decode_chunk(UncompressedChunk          *header
+    aku_Status decode_chunk( UncompressedChunk   *header
                            , const unsigned char *pbegin
                            , const unsigned char  *pend
                            , uint32_t              nelements);
@@ -481,6 +481,18 @@ struct CompressionUtil {
       * in time order everythin ordered by time first and by id second.
       */
     static bool convert_from_time_order(const UncompressedChunk &header, UncompressedChunk* out);
+
+    /** Convert input using delta coding. Function works in place.
+      */
+    static void delta_encode(uint64_t* input, size_t input_size);
+
+    /** Convert delta coded input to original form. Function works in place.
+      */
+    static void delta_decode(uint64_t* input, size_t input_size);
+
+    /** Compress list of sorted integers using variable length encoding.
+     */
+    static size_t compress_sorted( void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size);
 };
 
 // Length -> RLE -> Base128
