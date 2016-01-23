@@ -256,43 +256,45 @@ struct IntEncoder {
     size_t size;            // size of the output buffer
     size_t pos;             // position in output buffer
     unsigned char ctrl;     // control byte
-    size_t ctrl_cnt;        // number of control bytes written
+    size_t ctrl_index;
+    int mask;
 
     IntEncoder(unsigned char* out, size_t outsize)
         : outbuf(out)
         , size(outsize / 8 * 8)
-        , pos(0)
+        , pos(1)
         , ctrl(0)
-        , ctrl_cnt(1)
+        , ctrl_index(0)
+        , mask(1)
     {
     }
 
-    void put(unsigned char value) {
+    void put(unsigned char value, bool final) {
         if (pos == size) {
             throw StreamOutOfBounds("not enough space");
         }
-        outbuf[ctrl_cnt + pos] = value;
-        pos++;
-        if (pos % 8 == 0) {
+        outbuf[pos] = value;
+        if (final) {
+            ctrl |= mask;
+        }
+        mask <<= 1;
+        if ((pos - ctrl_index) == 8) {
             flush();
         }
+        pos++;
     }
 
     size_t get_size() const {
-        return ctrl_cnt + pos;
+        return pos;
     }
 
     void flush() {
         // write control byte
-        outbuf[ctrl_cnt + pos - 8] = ctrl;
-        ctrl_cnt++;
-    }
-
-    void set_eov() {
-        // set end of value in control byte
-        auto ctrl_pos = (pos - ctrl_cnt) % 8;
-        ctrl |= 1 << ctrl_pos;
-        ctrl_cnt++;
+        outbuf[ctrl_index] = ctrl;
+        ctrl_index += 9;
+        pos++;
+        mask = 1;
+        ctrl = 0;
     }
 };
 
@@ -325,10 +327,10 @@ struct IntDecoder {
             result |= input[nctrl + pos] << shift;
             pos++;
             shift += 8;
-            if (pos % 8) {
+            if (pos % 8 == 0) {
                 next();
             }
-        } while((ctrl & (1 << bit_index)) != 0);
+        } while((ctrl & (1 << bit_index++)) == 0);
         return result;
     }
 
@@ -336,7 +338,7 @@ struct IntDecoder {
     void next() {
         ctrl = input[nctrl + pos];
         nctrl++;
-        bit_index = 1;
+        bit_index = 0;
     }
 };
 
@@ -345,17 +347,17 @@ size_t CompressionUtil::compress_sorted( void* buffer, size_t buffer_size, const
     IntEncoder encoder(reinterpret_cast<unsigned char*>(buffer), buffer_size);
     for (size_t i = 0u; i < input_size; i++) {
         uint64_t value = input[i];
-        int leading_zeroes = 64;
+        int leading_zeroes = 56;  // if value is 0 we should store 1 byte
         if (value) {
             leading_zeroes = __builtin_clzl(value);
         }
-        int nbytes = (64 - leading_zeroes) / 8;
+        int nbytes = (64 - leading_zeroes / 8 * 8) / 8;
         for (int i = 0; i < nbytes; i++) {
-            encoder.put(static_cast<unsigned char>(value & 0xFF));
+            encoder.put(static_cast<unsigned char>(value & 0xFF), i == (nbytes - 1));
             value >>= 8;
         }
-        encoder.set_eov();
     }
+    encoder.flush();
     return encoder.get_size();
 }
 

@@ -284,13 +284,18 @@ BOOST_AUTO_TEST_CASE(Test_chunk_compression) {
 }
 
 BOOST_AUTO_TEST_CASE(Test_int_compression) {
-    uint64_t input[] = { 0, 1, 2 };
+    uint64_t input[] = { 0, 1, 2, 0x1020, 0x102030, 0x10203040, 0x1020304050, 0x102030405060, 0x10203040506070, 0x1020304050607080 };
+    const size_t SZ = sizeof(input)/sizeof(uint64_t);
     std::vector<uint8_t> buffer;
     buffer.resize(0x1000);
-    size_t n = CompressionUtil::compress_sorted(buffer.data(), buffer.size(), input, 3);
-    uint64_t output[3];
-    CompressionUtil::decompress_sorted(buffer.data(), n, output, 3);
-    for(int i = 0; i < 3; i++) {
-        BOOST_REQUIRE_EQUAL(input[i], output[i]);
+    size_t n = CompressionUtil::compress_sorted(buffer.data(), buffer.size(), input, SZ);
+    uint64_t output[SZ];
+    CompressionUtil::decompress_sorted(buffer.data(), n, output, SZ);
+    for(size_t i = 0; i < SZ; i++) {
+        if (input[i] != output[i]) {
+            std::stringstream fmt;
+            fmt << "Failed at " << i << " input=" << input[i] << ", output=" << output[i];
+            BOOST_FAIL(fmt.str());
+        }
     }
 }
