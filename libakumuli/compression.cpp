@@ -256,8 +256,11 @@ struct IntEncoder {
     size_t size;            // size of the output buffer
     size_t pos;             // position in output buffer
     unsigned char ctrl;     // control byte
-    size_t ctrl_index;
-    int mask;
+    size_t ctrl_index;      // control byte index in output
+
+    enum {
+        BLOCK_SIZE = 9,
+    };
 
     IntEncoder(unsigned char* out, size_t outsize)
         : outbuf(out)
@@ -265,36 +268,50 @@ struct IntEncoder {
         , pos(1)
         , ctrl(0)
         , ctrl_index(0)
-        , mask(1)
     {
     }
 
-    void put(unsigned char value, bool final) {
-        if (pos == size) {
-            throw StreamOutOfBounds("not enough space");
-        }
-        outbuf[pos] = value;
-        if (final) {
-            ctrl |= mask;
-        }
-        mask <<= 1;
-        if ((pos - ctrl_index) == 8) {
-            flush();
-        }
-        pos++;
-    }
-
-    size_t get_size() const {
+    size_t get_size() {
         return pos;
     }
 
+    int curr_block_index() const {
+        return pos - (ctrl_index + 1);
+    }
+
+    int curr_block_cap() const {
+        return 8 - curr_block_index();
+    }
+
+    void put(uint64_t value) {
+        int leading_zeroes = 56;  // if value is 0 we should store 1 byte
+        if (value) {
+            leading_zeroes = __builtin_clzl(value);
+        }
+        int nbytes = (64 - leading_zeroes / 8 * 8) / 8;
+        if (nbytes > curr_block_cap()) {
+            // move to next block
+            move_to_next_block();
+        }
+        size_t end = pos + nbytes;
+        for (; pos < end; pos++) {
+            unsigned char byte = value & 0xFF;
+            outbuf[pos] = byte;
+            value >>= 8;
+        }
+        ctrl |= (1 << (curr_block_index() - 1));
+        // -1 because pos points to the next free byte of the block here
+    }
+
     void flush() {
-        // write control byte
         outbuf[ctrl_index] = ctrl;
-        ctrl_index += 9;
-        pos++;
-        mask = 1;
+    }
+
+    void move_to_next_block() {
+        outbuf[ctrl_index] = ctrl;
         ctrl = 0;
+        ctrl_index += BLOCK_SIZE;
+        pos = ctrl_index + 1;
     }
 };
 
@@ -347,15 +364,7 @@ size_t CompressionUtil::compress_sorted( void* buffer, size_t buffer_size, const
     IntEncoder encoder(reinterpret_cast<unsigned char*>(buffer), buffer_size);
     for (size_t i = 0u; i < input_size; i++) {
         uint64_t value = input[i];
-        int leading_zeroes = 56;  // if value is 0 we should store 1 byte
-        if (value) {
-            leading_zeroes = __builtin_clzl(value);
-        }
-        int nbytes = (64 - leading_zeroes / 8 * 8) / 8;
-        for (int i = 0; i < nbytes; i++) {
-            encoder.put(static_cast<unsigned char>(value & 0xFF), i == (nbytes - 1));
-            value >>= 8;
-        }
+        encoder.put(value);
     }
     encoder.flush();
     return encoder.get_size();
