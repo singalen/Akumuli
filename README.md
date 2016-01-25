@@ -117,4 +117,6 @@ Questions?
 ----------
 [Google group](https://groups.google.com/forum/#!forum/akumuli)
 
+[Slack](https://akumuli.slack.com)
+
 [Trello board](https://trello.com/b/UO1sGA99)
