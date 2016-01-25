@@ -27,7 +27,7 @@ struct RandomWalk {
 
     double generate(aku_ParamId id) {
         values.at(id) += distribution(generator);
-        return values.at(id);
+        return (float)values.at(id);
     }
 
     void add_anomaly(aku_ParamId id, double value) {
@@ -50,12 +50,11 @@ int main(int argc, char** argv) {
             int k = rand() % 2;
             if (k) {
                 c++;
-            } else if (c > 0) {
-                c--;
             }
             header.timestamps.push_back((ts + c) << 8);
             header.values.push_back(rwalk.generate(0));
         }
+        c = 100;
     }
 
     ByteVector out;
