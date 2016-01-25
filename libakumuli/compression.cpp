@@ -264,7 +264,7 @@ struct IntEncoder {
 
     IntEncoder(unsigned char* out, size_t outsize)
         : outbuf(out)
-        , size(outsize / 8 * 8)
+        , size(outsize)
         , pos(1)
         , ctrl(0)
         , ctrl_index(0)
@@ -320,16 +320,21 @@ struct IntDecoder {
     const unsigned char* input;
     const size_t size;
     size_t pos;
-    int bit_index;
+    size_t ctrl_index;
     unsigned char ctrl;
-    size_t nctrl;
+    int bit_index;
+
+    enum {
+        BLOCK_SIZE = 9
+    };
 
     IntDecoder(const unsigned char* input, size_t size)
         : input(input)
         , size(size)
-        , pos(0)
+        , pos(1)
+        , ctrl_index(0)
+        , ctrl(0)
         , bit_index(0)
-        , nctrl(1)
     {
         assert(size);
         ctrl = input[0];
@@ -340,21 +345,28 @@ struct IntDecoder {
         // naive implementation
         uint64_t result = 0;
         int shift = 0;
+        int mask = 0;
         do {
-            result |= input[nctrl + pos] << shift;
+            result |= static_cast<uint64_t>(input[pos]) << shift;
             pos++;
             shift += 8;
-            if (pos % 8 == 0) {
-                next();
+            mask = 1 << bit_index++;
+            if (shift == 64) {
+                break;
             }
-        } while((ctrl & (1 << bit_index++)) == 0);
+        } while((ctrl & mask) == 0);
+        if ((ctrl >> bit_index) == 0) {
+            // proceed to the next block if this block is completed
+            next();
+        }
         return result;
     }
 
     //! Move to next 8byte block
     void next() {
-        ctrl = input[nctrl + pos];
-        nctrl++;
+        ctrl_index += BLOCK_SIZE;
+        pos = ctrl_index + 1;
+        ctrl = input[ctrl_index];
         bit_index = 0;
     }
 };

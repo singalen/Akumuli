@@ -283,7 +283,9 @@ BOOST_AUTO_TEST_CASE(Test_chunk_compression) {
     test_chunk_header_compression();
 }
 
-BOOST_AUTO_TEST_CASE(Test_int_compression) {
+BOOST_AUTO_TEST_CASE(Test_int_compression_1) {
+    // Check that underlying binary representation is correct.
+    // --
     uint64_t input[] = { 0, 1, 2, 0x1020, 0x102030, 0x10203040, 0x1020304050, 0x102030405060, 0x10203040506070, 0x1020304050607080 };
     uint8_t output[] = { 151,    0,    1,    2, 0x20, 0x10, 0x30, 0x20, 0x10,
                            8, 0x40, 0x30, 0x20, 0x10,    0,    0,    0,    0,
@@ -299,6 +301,71 @@ BOOST_AUTO_TEST_CASE(Test_int_compression) {
         if (buffer[i] != output[i]) {
             std::stringstream fmt;
             fmt << "Failed at " << i << " expected: " << int(output[i]) << ", actual: " << int(buffer[i]);
+            BOOST_FAIL(fmt.str());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(Test_int_compression_2) {
+    // Check that data can be decoded correctly.
+    // --
+    uint64_t input[] = { 0, 1, 2, 0x1020, 0x102030, 0x10203040, 0x1020304050, 0x102030405060, 0x10203040506070, 0x1020304050607080 };
+    const size_t SZ = sizeof(input)/sizeof(uint64_t);
+    std::vector<uint8_t> buffer;
+    buffer.resize(SZ*100);
+    size_t n = CompressionUtil::compress_sorted(buffer.data(), buffer.size(), input, SZ);
+    std::vector<uint64_t> output;
+    output.resize(SZ);
+    CompressionUtil::decompress_sorted(buffer.data(), n, output.data(), SZ);
+    for(size_t i = 0; i < SZ; i++) {
+        if (input[i] != output[i]) {
+            std::stringstream fmt;
+            fmt << "Failed at " << i << " expected: " << input[i] << ", actual: " << output[i];
+            BOOST_FAIL(fmt.str());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(Test_int_compression_3) {
+    // Check that data can be decoded correctly.
+    // --
+    struct RandGen {
+        std::random_device                      randdev;
+        std::mt19937                            generator;
+        std::uniform_int_distribution<uint64_t> distribution_wide;   // this will return 8-byte int
+        std::uniform_int_distribution<uint64_t> distribution_narrow; // this will return 2-byte int
+
+        RandGen()
+            : generator(randdev())
+            , distribution_wide()
+            , distribution_narrow(0, 0xffff)
+        {
+        }
+
+        uint64_t operator()() {
+            static int seq = 0;
+            if (seq % 3 == 0) {
+                return distribution_wide(generator);
+            }
+            return distribution_narrow(generator);
+        }
+    };
+
+    const int SZ = 100000;
+    std::vector<uint64_t> input;
+    input.resize(SZ);
+    RandGen rnd;
+    std::generate(input.begin(), input.end(), [&rnd]() { return rnd(); });
+    std::vector<uint8_t> buffer;
+    buffer.resize(SZ*100);
+    size_t n = CompressionUtil::compress_sorted(buffer.data(), buffer.size(), input.data(), SZ);
+    std::vector<uint64_t> output;
+    output.resize(SZ);
+    CompressionUtil::decompress_sorted(buffer.data(), n, output.data(), SZ);
+    for(size_t i = 0; i < SZ; i++) {
+        if (input[i] != output[i]) {
+            std::stringstream fmt;
+            fmt << "Failed at " << i << " expected: " << input[i] << ", actual: " << output[i];
             BOOST_FAIL(fmt.str());
         }
     }
