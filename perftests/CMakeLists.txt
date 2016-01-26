@@ -116,6 +116,7 @@ add_executable(
     perf_compression.cpp
     perftest_tools.cpp
     ../libakumuli/compression.cpp
+    ../libakumuli/datetime.cpp
 )
 
 target_link_libraries(
