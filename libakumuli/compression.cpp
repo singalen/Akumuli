@@ -224,98 +224,6 @@ void CompressionUtil::decompress_doubles(Base128StreamReader&     rstream,
 }
 
 
-void CompressionUtil::delta_encode(uint64_t* input, size_t input_size) {
-    /* First four values will be encoded as is. Next for will be relpaced
-     * with their difference with original foruth values - out[4] = input[4] - input[0],
-     * out[5] = input[5] - input[1], out[6] = input[6] - input[2], out[7] = input[7] - input[3].
-     * This algorithm can be vectorized in the future using SSE.
-     */
-    if (input_size < 5) {
-        // No modifications needed
-        return;
-    }
-    for (size_t i = 4; i < input_size; i++) {
-        input[i] = input[i] - input[i - 4];
-    }
-}
-
-
-void CompressionUtil::delta_decode(uint64_t* input, size_t input_size) {
-    if (input_size < 5) {
-        // No modifications needed
-        return;
-    }
-    for (size_t i = 4; i < input_size; i++) {
-        input[i] = input[i] + input[i - 4];
-    }
-}
-
-
-struct IntEncoder {
-    unsigned char* outbuf;  // output buffer
-    size_t size;            // size of the output buffer
-    size_t pos;             // position in output buffer
-    unsigned char ctrl;     // control byte
-    size_t ctrl_index;      // control byte index in output
-
-    enum {
-        BLOCK_SIZE = 9,
-    };
-
-    IntEncoder(unsigned char* out, size_t outsize)
-        : outbuf(out)
-        , size(outsize)
-        , pos(1)
-        , ctrl(0)
-        , ctrl_index(0)
-    {
-    }
-
-    size_t get_size() {
-        return pos;
-    }
-
-    int curr_block_index() const {
-        return pos - (ctrl_index + 1);
-    }
-
-    int curr_block_cap() const {
-        return 8 - curr_block_index();
-    }
-
-    void put(uint64_t value) {
-        int leading_zeroes = 56;  // if value is 0 we should store 1 byte
-        if (value) {
-            leading_zeroes = __builtin_clzl(value);
-        }
-        int nbytes = (64 - leading_zeroes / 8 * 8) / 8;
-        if (nbytes > curr_block_cap()) {
-            // move to next block
-            move_to_next_block();
-        }
-        size_t end = pos + nbytes;
-        for (; pos < end; pos++) {
-            unsigned char byte = value & 0xFF;
-            outbuf[pos] = byte;
-            value >>= 8;
-        }
-        ctrl |= (1 << (curr_block_index() - 1));
-        // -1 because pos points to the next free byte of the block here
-    }
-
-    void flush() {
-        outbuf[ctrl_index] = ctrl;
-    }
-
-    void move_to_next_block() {
-        outbuf[ctrl_index] = ctrl;
-        ctrl = 0;
-        ctrl_index += BLOCK_SIZE;
-        pos = ctrl_index + 1;
-    }
-};
-
-
 struct IntDecoder {
     const unsigned char* input;
     const size_t size;
@@ -372,51 +280,115 @@ struct IntDecoder {
 };
 
 
-size_t CompressionUtil::compress_sorted( void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size) {
-    IntEncoder encoder(reinterpret_cast<unsigned char*>(buffer), buffer_size);
-    for (size_t i = 0u; i < input_size; i++) {
-        uint64_t value = input[i];
-        encoder.put(value);
+static std::vector<std::pair<size_t, size_t>> split_chunk(const UncompressedChunk& data, int N) {
+    std::vector<std::pair<size_t, size_t>> indexes;
+    size_t sz = data.paramids.size();
+    size_t base = 0;
+    for (int i = 0; i < N; i++) {
+        // from base to sz/N + something
+        auto begin = base;
+        auto end = base + sz/N;
+        if (begin == end) {
+            break;
+        }
+        auto lastid = data.paramids.at(end - 1);
+        auto it = std::find_if(data.paramids.cbegin() + end, data.paramids.cend(), [lastid](aku_ParamId id) { return id != lastid; });
+        indexes.push_back(std::make_pair(begin, data.paramids.cend() - it));
     }
-    encoder.flush();
-    return encoder.get_size();
+    return indexes;
 }
 
-void CompressionUtil::decompress_sorted(const void* buffer, size_t buffer_size, uint64_t* output, size_t output_size) {
-    IntDecoder decoder(reinterpret_cast<const unsigned char*>(buffer), buffer_size);
-    for (size_t i = 0; i < output_size; i++) {
-        output[i] = decoder.get();
+
+template<class TVal>
+using ZDeltaRleWriter = DeltaStreamWriter<ZigZagStreamWriter<RLEStreamWriter<int64_t>, int64_t>, int64_t>;
+
+template<class TVal>
+using DeltaRleWriter = DeltaStreamWriter<RLEStreamWriter<uint64_t>, uint64_t>;
+
+template<class TVal>
+using ZDeltaRleReader = DeltaStreamReader<ZigZagStreamReader<RLEStreamReader<int64_t>, int64_t>, int64_t>;
+
+template<class TVal>
+using DeltaRleReader = DeltaStreamReader<RLEStreamReader<uint64_t>, uint64_t>;
+
+
+static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
+                                         size_t ixbegin, size_t ixend,
+                                         size_t bytes_per_el,
+                                         aku_Timestamp* out_min,
+                                         aku_Timestamp* out_max) {
+    if (bytes_per_el > 128) {
+        // something goes really wrong
+        AKU_PANIC("compression alg. failure");
     }
-}
+    std::vector<uint8_t> result;
+    size_t buffer_size = (ixend - ixbegin) * bytes_per_el + 4*sizeof(uint32_t) + 2*sizeof(aku_ParamId);
+    result.resize(buffer_size);
 
-/** NOTE:
-  * Data should be ordered by paramid and timestamp.
-  * ------------------------------------------------
-  * Chunk format:
-  * chunk size - uint32 - total number of bytes in the chunk
-  * nelements - uint32 - total number of elements in the chunk
-  * paramid stream:
-  *     stream size - uint32 - number of bytes in a stream
-  *     body - array
-  * timestamp stream:
-  *     stream size - uint32 - number of bytes in a stream
-  *     body - array
-  * payload stream:
-  *     ncolumns - number of columns stored (for future use)
-  *     column[0]:
-  *         double stream:
-  *             stream size - uint32
-  *             bytes:
-  */
+    // Reserve space for metadata
+    uint8_t* begin = result.data();
+    const uint8_t* end = result.data() + buffer_size;
+    aku_ParamId* first_id = reinterpret_cast<aku_ParamId*>(begin);
+    begin += sizeof(aku_ParamId);
+    aku_ParamId* last_id = reinterpret_cast<aku_ParamId*>(begin);
+    begin += sizeof(aku_ParamId);
+    uint32_t* num_elements = reinterpret_cast<uint32_t*>(begin);
+    begin += sizeof(uint32_t);
+    uint32_t* paramid_stream_sz = reinterpret_cast<uint32_t*>(begin);
+    begin += sizeof(uint32_t);
+    uint32_t* tmstamp_stream_sz = reinterpret_cast<uint32_t*>(begin);
+    begin += sizeof(uint32_t);
+    uint32_t* payload_stream_sz = reinterpret_cast<uint32_t*>(begin);
+    begin += sizeof(uint32_t);
 
-template<class StreamType, class Fn>
-aku_Status write_to_stream(Base128StreamWriter& stream, const Fn& writer) {
-    uint32_t* length_prefix = stream.allocate<uint32_t>();
-    StreamType wstream(stream);
-    writer(wstream);
-    wstream.commit();
-    *length_prefix = (uint32_t)wstream.size();
-    return AKU_SUCCESS;
+    try {
+        // Data should contain at least one element
+        assert(data.paramids.size() > 0);
+        *num_elements = (uint32_t)data.paramids.size();
+        *first_id = data.paramids.at(ixbegin);
+        *last_id = data.paramids.at(ixend-1);
+
+        Base128StreamWriter wstream(begin, end);
+
+        // Write ParamId stream
+        DeltaRleWriter idwriter(wstream);
+        for (size_t ix = ixbegin; ix < ixend; ix++) {
+            idwriter.put(data.paramids[ix]);
+        }
+        idwriter.commit();
+        *paramid_stream_sz = (uint32_t)idwriter.size();
+
+        // Write Timestamp stream
+        // Timestamps can decrease, because of that we should use zig-zag encoding. To be able to do this
+        // we should cast each timestamp to int64_t. This is safe because timestamps will fit into int64_t
+        // (and BTW they will fit into double).
+        // TODO: calculate max timestamp that can be stored
+        ZDeltaRleWriter tswriter(wstream);
+        aku_Timestamp mints = ~0, maxts = 0;
+        for (size_t ix = ixbegin; ix < ixend; ix++) {
+            auto ts = data.timestamps[ix];
+            mints = std::min(ts, mints);
+            maxts = std::max(ts, maxts);
+            tswriter.put(ts);
+        }
+        tswriter.commit();
+        *tmstamp_stream_sz = (uint32_t)tswriter.size();
+        *out_min = mints;
+        *out_max = maxts;
+
+        // Write Payload stream
+        *payload_stream_sz = (uint32_t)CompressionUtil::compress_doubles(data.values, wstream);
+    } catch(StreamOutOfBounds const&) {
+        // free memory
+        {
+            std::vector<uint8_t> tmp;
+            std::swap(result, tmp);
+        }
+        // TODO: add this information to self-monitoring
+        result = std::move(data, ixbegin, ixend, bytes_per_el * 2);
+    }
+
+    return std::move(result);
 }
 
 aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
@@ -426,89 +398,93 @@ aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
                                         , const UncompressedChunk&  data)
 {
     aku_MemRange available_space = writer->allocate();
-    unsigned char* begin = (unsigned char*)available_space.address;
-    unsigned char* end = begin + (available_space.length - 2*sizeof(uint32_t));  // 2*sizeof(aku_EntryOffset)
-    Base128StreamWriter stream(begin, end);
+    uint8_t* const origin = (uint8_t*)available_space.address;
+    uint8_t* begin = (uint8_t*)available_space.address;
+    uint8_t* end = begin + (available_space.length - 2*sizeof(uint32_t));  // 2*sizeof(aku_EntryOffset)
 
-    try {
-        // ParamId stream
-        write_to_stream<DeltaRLEWriter>(stream, [&](DeltaRLEWriter& paramid_stream) {
-            for (auto id: data.paramids) {
-                paramid_stream.put(id);
-            }
-        });
-
-        // Timestamp stream
-        write_to_stream<DeltaRLEWriter>(stream, [&](DeltaRLEWriter& timestamp_stream) {
-            aku_Timestamp mints = AKU_MAX_TIMESTAMP,
-                          maxts = AKU_MIN_TIMESTAMP;
-            for (auto ts: data.timestamps) {
-                mints = std::min(mints, ts);
-                maxts = std::max(maxts, ts);
-                timestamp_stream.put(ts);
-            }
-            *ts_begin = mints;
-            *ts_end   = maxts;
-        });
-
-        // Save number of columns (always 1)
-        uint32_t* ncolumns = stream.allocate<uint32_t>();
-        *ncolumns = 1;
-
-        // Doubles stream
-        uint32_t* doubles_stream_size = stream.allocate<uint32_t>();
-        *doubles_stream_size = (uint32_t)CompressionUtil::compress_doubles(data.values, stream);
-
-        *n_elements = static_cast<uint32_t>(data.paramids.size());
-    } catch (StreamOutOfBounds const& e) {
+    if (available_space < 4) {
         return AKU_EOVERFLOW;
     }
 
-    return writer->commit(stream.size());
+    auto indexes = split_chunk(data, 4);
+    *reinterpret_cast<uinht32_t*>(begin) = (uint32_t)indexes.size();
+    begin += sizeof(uint32_t);
+
+    aku_Timestamp mints = ~0, maxts = 0;
+    for (auto ix: indexes) {
+        aku_Timestamp itmin, itmax;
+        std::vector<uint8_t> buffer = encode_block(data, ix.first, ix.second, 10, &itmin, &itmax);
+        if (end - begin > buffer.size()) {
+            memcpy(buffer.data(), begin, buffer.size());
+            begin += buffer.size();
+            mints = std::min(mints, itmin);
+            maxts = std::max(maxts, itmax);
+        } else {
+            return AKU_EOVERFLOW;
+        }
+    }
+    *ts_begin = mints;
+    *ts_end = maxts;
+    *n_elements = (uint32_t)data.paramids.size();
+    return writer->commit(begin - origin);
 }
 
-template<class Stream, class Fn>
-void read_from_stream(Base128StreamReader& reader, const Fn& func) {
-    uint32_t size_prefix = reader.read_raw<uint32_t>();
-    Stream stream(reader);
-    func(stream, size_prefix);
+static aku_Status decode_block(UncompressedChunk *header, const uint8_t* begin, const uint8_t* end) {
+    try {
+        if (end - begin < 32) {
+            throw StreamOutOfBounds("chunk too small");
+        }
+
+        aku_ParamId* first_id = *reinterpret_cast<aku_ParamId*>(begin);
+        begin += sizeof(aku_ParamId);
+
+        aku_ParamId* last_id = *reinterpret_cast<aku_ParamId*>(begin);
+        begin += sizeof(aku_ParamId);
+
+        uint32_t num_elements = *reinterpret_cast<uint32_t*>(begin);
+        begin += sizeof(uint32_t);
+
+        uint32_t* paramid_stream_sz = *reinterpret_cast<uint32_t*>(begin);
+        begin += sizeof(uint32_t);
+
+        uint32_t* tmstamp_stream_sz = *reinterpret_cast<uint32_t*>(begin);
+        begin += sizeof(uint32_t);
+
+        uint32_t* payload_stream_sz = *reinterpret_cast<uint32_t*>(begin);
+        begin += sizeof(uint32_t);
+
+        Base128StreamReader rstream(begin, end);
+
+        // Read ids
+        DeltaRleReader idreader(rstream);
+        for (uint32_t i = 0; i < num_elements; i++) {
+            auto id = idreader.next();
+            header->paramids.push_back(id);
+        }
+
+        // Read timestamps
+        ZDeltaRleReader tsreader(rstream);
+        for (uint32_t i = 0; i < num_elements; i++) {
+            ts = tsreader.next();
+            header->timestamps.push_back(ts);
+        }
+
+        CompressionUtil::decompress_doubles(rstream, num_elements, &header->values);
+
+    } catch (StreamOutOfBounds const&) {
+        return AKU_EBAD_DATA;
+    }
+    return AKU_SUCCESS;
 }
 
+
+// obsolete
 aku_Status CompressionUtil::decode_chunk( UncompressedChunk   *header
                                         , const unsigned char *pbegin
                                         , const unsigned char *pend
                                         , uint32_t             nelements)
 {
-    try {
-        Base128StreamReader rstream(pbegin, pend);
-        // Paramids
-        read_from_stream<DeltaRLEReader>(rstream, [&](DeltaRLEReader& reader, uint32_t size) {
-            for (auto i = nelements; i --> 0;) {
-                auto paramid = reader.next();
-                header->paramids.push_back(paramid);
-            }
-        });
-
-        // Timestamps
-        read_from_stream<DeltaRLEReader>(rstream, [&](DeltaRLEReader& reader, uint32_t size) {
-            for (auto i = nelements; i--> 0;) {
-                auto timestamp = reader.next();
-                header->timestamps.push_back(timestamp);
-            }
-        });
-
-        // Payload
-        const uint32_t ncolumns = rstream.read_raw<uint32_t>();
-        AKU_UNUSED(ncolumns);
-
-        // Doubles stream
-        header->values.resize(nelements);
-        const uint32_t nblocks = rstream.read_raw<uint32_t>();
-        CompressionUtil::decompress_doubles(rstream, nblocks, &header->values);
-    } catch (StreamOutOfBounds const&) {
-        return AKU_EBAD_DATA;
-    }
-    return AKU_SUCCESS;
+    //
 }
 
 template<class Fn>

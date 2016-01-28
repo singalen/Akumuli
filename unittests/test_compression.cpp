@@ -283,6 +283,7 @@ BOOST_AUTO_TEST_CASE(Test_chunk_compression) {
     test_chunk_header_compression();
 }
 
+/*
 BOOST_AUTO_TEST_CASE(Test_int_compression_1) {
     // Check that underlying binary representation is correct.
     // --
@@ -370,3 +371,5 @@ BOOST_AUTO_TEST_CASE(Test_int_compression_3) {
         }
     }
 }
+*/
+

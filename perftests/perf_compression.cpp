@@ -232,7 +232,7 @@ TestRunResults run_tests(fs::path path, bool bench) {
         runresults.perf.reserve(NRUNS);
         runresults.gz_perf.reserve(NRUNS);
         for (int i = 0; i < NRUNS; i++) {
-            vec.resize(UNCOMPRESSED_SIZE);
+            vec.resize(UNCOMPRESSED_SIZE*4);
             PerfTimer tm;
             Writer w(&vec);
             aku_Timestamp ts;

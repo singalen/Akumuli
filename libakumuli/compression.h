@@ -137,70 +137,113 @@ public:
 
 //! Base128 encoder
 struct Base128StreamWriter {
-    // underlying memory region
-    const unsigned char *begin_;
-    const unsigned char *end_;
-    unsigned char       *pos_;
+    unsigned char* outbuf_;  // output buffer
+    size_t size_;            // size of the output buffer
+    size_t pos_;             // position in output buffer
+    unsigned char ctrl_;     // control byte
+    size_t ctrl_index_;      // control byte index in output
+
+    enum {
+        BLOCK_SIZE = 9
+    };
 
     Base128StreamWriter(unsigned char* begin, const unsigned char* end) 
-        : begin_(begin)
-        , end_(end)
-        , pos_(begin)
+        : outbuf_(begin)
+        , size_(end - begin)
+        , pos_(1)
+        , ctrl_(0)
+        , ctrl_index_(0)
     {
     }
 
     Base128StreamWriter(Base128StreamWriter& other)
-        : begin_(other.begin_)
-        , end_(other.end_)
-        , pos_(other.pos_)
+        : outbuf_(other.outbuf_)
+        , size_(other.size_)
+        , pos_(1)
+        , ctrl_(0)
+        , ctrl_index_(0)
     {
+    }
+
+    int curr_block_index() const {
+        return pos_ - (ctrl_index_ + 1);
+    }
+
+    int curr_block_cap() const {
+        return 8 - curr_block_index();
     }
 
     /** Put value into stream.
      */
     template<class TVal>
     void put(TVal value) {
-        Base128Int<TVal> val(value);
-        unsigned char* p = val.put(pos_, end_);
-        if (pos_ == p) {
-            throw StreamOutOfBounds("can't write value, out of bounds");
+        int leading_zeroes = 56;  // if value is 0 we should store 1 byte
+        if (value) {
+            leading_zeroes = __builtin_clzl(value);
         }
-        pos_ = p;
+        int nbytes = (64 - leading_zeroes / 8 * 8) / 8;
+        if (nbytes > curr_block_cap()) {
+            // move to next block
+            move_to_next_block();
+        }
+        size_t end = pos_ + nbytes;
+        for (; pos_ < end; pos_++) {
+            unsigned char byte = value & 0xFF;
+            outbuf_[pos_] = byte;
+            value >>= 8;
+        }
+        ctrl_ |= (1 << (curr_block_index() - 1));
+        // -1 because pos points to the next free byte of the block here
     }
 
-    void put_raw(unsigned char value) {
-        if (pos_ == end_) {
-            throw StreamOutOfBounds("can't write value, out of bounds");
-        }
-        *pos_++ = value;
+    void commit() {
+        outbuf_[ctrl_index_] = ctrl_;
     }
 
-    void put_raw(uint32_t value) {
-        if ((end_ - pos_) < (int)sizeof(value)) {
-            throw StreamOutOfBounds("can't write value, out of bounds");
+    void move_to_next_block() {
+        outbuf_[ctrl_index_] = ctrl_;
+        ctrl_ = 0;
+        ctrl_index_ += BLOCK_SIZE;
+        pos_ = ctrl_index_ + 1;
+        if (ctrl_index_ > size_) {
+            throw StreamOutOfBounds("out of memory");
         }
-        *reinterpret_cast<uint32_t*>(pos_) = value;
-        pos_ += sizeof(value);
     }
-
-    void put_raw(uint64_t value) {
-        if ((end_ - pos_) < (int)sizeof(value)) {
-            throw StreamOutOfBounds("can't write value, out of bounds");
-        }
-        *reinterpret_cast<uint64_t*>(pos_) = value;
-        pos_ += sizeof(value);
-    }
-
-
-    //! Commit stream
-    void commit() {}
 
     size_t size() const {
-        return pos_ - begin_;
+        return pos_;
     }
 
     size_t space_left() const {
-        return end_ - pos_;
+        return size_ - pos_;
+    }
+
+    // "Raw" interface
+
+    //! Put raw value to the output stream. `put` method wouldn't work if this method were called.
+    void put_raw(unsigned char value) {
+        if (pos_ == size_) {
+            throw StreamOutOfBounds("can't write value, out of bounds");
+        }
+        outbuf_[pos_++] = value;
+    }
+
+    //! Put raw value to the output stream. `put` method wouldn't work if this method were called.
+    void put_raw(uint32_t value) {
+        if ((pos_ + sizeof(value)) > size_) {
+            throw StreamOutOfBounds("can't write value, out of memory");
+        }
+        *reinterpret_cast<uint64_t*>(outbuf_ + pos_) = value;
+        pos_ += sizeof(value);
+    }
+
+    //! Put raw value to the output stream. `put` method wouldn't work if this method were called.
+    void put_raw(uint64_t value) {
+        if (pos_ + sizeof(value) > size_) {
+            throw StreamOutOfBounds("can't write value, out of memory");
+        }
+        *reinterpret_cast<uint64_t*>(outbuf_ + pos_) = value;
+        pos_ += sizeof(value);
     }
 
     /** Try to allocate space inside a stream in current position without
@@ -214,7 +257,7 @@ struct Base128StreamWriter {
         if (space_left() < sz) {
             throw StreamOutOfBounds("can't allocate value, not enough space");
         }
-        T* result = reinterpret_cast<T*>(pos_);
+        T* result = reinterpret_cast<T*>(outbuf_ + pos_);
         pos_ += sz;
         return result;
     }
@@ -222,24 +265,56 @@ struct Base128StreamWriter {
 
 //! Base128 decoder
 struct Base128StreamReader {
-    const unsigned char* pos_;
-    const unsigned char* end_;
+    const unsigned char* input_;
+    const size_t size_;
+    size_t pos_;
+    size_t ctrl_index_;
+    unsigned char ctrl_;
+    int bit_index_;
+
+    enum {
+        BLOCK_SIZE = 9
+    };
 
     Base128StreamReader(const unsigned char* begin, const unsigned char* end)
-        : pos_(begin)
-        , end_(end)
+        : input_(begin)
+        , size_(end - begin)
+        , pos_(1)
+        , ctrl_index_(0)
+        , ctrl_(0)
+        , bit_index_(0)
     {
+        assert(size_);
+        ctrl_ = input_[0];
+    }
+
+    //! Move to next 8byte block
+    void _next_block() {
+        ctrl_index_ += BLOCK_SIZE;
+        pos_ = ctrl_index_ + 1;
+        ctrl_ = input_[ctrl_index_];
+        bit_index_ = 0;
     }
 
     template<class TVal>
     TVal next() {
-        Base128Int<TVal> value;
-        auto p = value.get(pos_, end_);
-        if (p == pos_) {
-            throw StreamOutOfBounds("can't read value, out of bounds");
+        TVal result = 0;
+        int shift = 0;
+        int mask = 0;
+        do {
+            result |= static_cast<TVal>(input_[pos_]) << shift;
+            pos_++;
+            shift += 8;
+            mask = 1 << bit_index_++;
+            if (shift == 64) {
+                break;
+            }
+        } while((ctrl_ & mask) == 0);
+        if ((ctrl_ >> bit_index_) == 0) {
+            // proceed to the next block if this block is completed
+            _next_block();
         }
-        pos_ = p;
-        return static_cast<TVal>(value);
+        return result;
     }
 
     //! Read uncompressed value from stream
@@ -249,17 +324,17 @@ struct Base128StreamReader {
         if (space_left() < sz) {
             throw StreamOutOfBounds("can't read value, out of bounds");
         }
-        auto val = *reinterpret_cast<const TVal*>(pos_);
+        auto val = *reinterpret_cast<const TVal*>(input_ + pos_);
         pos_ += sz;
         return val;
     }
 
     size_t space_left() const {
-        return end_ - pos_;
+        return size_ - pos_;
     }
 
     const unsigned char* pos() const {
-        return pos_;
+        return input_ + pos_;
     }
 };
 
@@ -413,7 +488,7 @@ struct RLEStreamReader {
     }
 
     unsigned char* pos() const {
-        return stream_.pos();
+        return stream_.pos_();
     }
 };
 
@@ -482,14 +557,6 @@ struct CompressionUtil {
       */
     static bool convert_from_time_order(const UncompressedChunk &header, UncompressedChunk* out);
 
-    /** Convert input using delta coding. Function works in place.
-      */
-    static void delta_encode(uint64_t* input, size_t input_size);
-
-    /** Convert delta coded input to original form. Function works in place.
-      */
-    static void delta_decode(uint64_t* input, size_t input_size);
-
     /** Compress list of sorted integers using variable length encoding.
       */
     static size_t compress_sorted(void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size);
@@ -498,12 +565,6 @@ struct CompressionUtil {
       */
     static void decompress_sorted(const void* buffer, size_t buffer_size, uint64_t* output, size_t output_size);
 };
-
-// Length -> RLE -> Base128
-typedef RLEStreamWriter<uint32_t> RLELenWriter;
-
-// Base128 -> RLE -> Length
-typedef RLEStreamReader<uint32_t> RLELenReader;
 
 // int64_t -> Delta -> ZigZag -> RLE -> Base128
 typedef RLEStreamWriter<int64_t> __RLEWriter;
