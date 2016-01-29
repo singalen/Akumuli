@@ -137,6 +137,143 @@ public:
 
 //! Base128 encoder
 struct Base128StreamWriter {
+    // underlying memory region
+    const unsigned char *begin_;
+    const unsigned char *end_;
+    unsigned char       *pos_;
+
+    Base128StreamWriter(unsigned char* begin, const unsigned char* end)
+        : begin_(begin)
+        , end_(end)
+        , pos_(begin)
+    {
+    }
+
+    Base128StreamWriter(Base128StreamWriter& other)
+        : begin_(other.begin_)
+        , end_(other.end_)
+        , pos_(other.pos_)
+    {
+    }
+
+    /** Put value into stream.
+     */
+    template<class TVal>
+    void put(TVal value) {
+        Base128Int<TVal> val(value);
+        unsigned char* p = val.put(pos_, end_);
+        if (pos_ == p) {
+            throw StreamOutOfBounds("can't write value, out of bounds");
+        }
+        pos_ = p;
+    }
+
+    void put_raw(unsigned char value) {
+        if (pos_ == end_) {
+            throw StreamOutOfBounds("can't write value, out of bounds");
+        }
+        *pos_++ = value;
+    }
+
+    void put_raw(uint32_t value) {
+        if ((end_ - pos_) < (int)sizeof(value)) {
+            throw StreamOutOfBounds("can't write value, out of bounds");
+        }
+        *reinterpret_cast<uint32_t*>(pos_) = value;
+        pos_ += sizeof(value);
+    }
+
+    void put_raw(uint64_t value) {
+        if ((end_ - pos_) < (int)sizeof(value)) {
+            throw StreamOutOfBounds("can't write value, out of bounds");
+        }
+        *reinterpret_cast<uint64_t*>(pos_) = value;
+        pos_ += sizeof(value);
+    }
+
+
+    //! Commit stream
+    void commit() {}
+
+    size_t size() const {
+        return pos_ - begin_;
+    }
+
+    size_t space_left() const {
+        return end_ - pos_;
+    }
+
+    /** Try to allocate space inside a stream in current position without
+      * compression (needed for size prefixes).
+      * @returns pointer to the value inside the stream
+      * @throw StreamOutOfBounds if there is not enough space for value
+      */
+    template<class T>
+    T* allocate() {
+        size_t sz = sizeof(T);
+        if (space_left() < sz) {
+            throw StreamOutOfBounds("can't allocate value, not enough space");
+        }
+        T* result = reinterpret_cast<T*>(pos_);
+        pos_ += sz;
+        return result;
+    }
+};
+
+//! Base128 decoder
+struct Base128StreamReader {
+    const unsigned char* pos_;
+    const unsigned char* end_;
+
+    Base128StreamReader(const unsigned char* begin, const unsigned char* end)
+        : pos_(begin)
+        , end_(end)
+    {
+    }
+
+    template<class TVal>
+    TVal next() {
+        Base128Int<TVal> value;
+        auto p = value.get(pos_, end_);
+        if (p == pos_) {
+            throw StreamOutOfBounds("can't read value, out of bounds");
+        }
+        pos_ = p;
+        return static_cast<TVal>(value);
+    }
+
+    //! Read uncompressed value from stream
+    template<class TVal>
+    TVal read_raw() {
+        size_t sz = sizeof(TVal);
+        if (space_left() < sz) {
+            throw StreamOutOfBounds("can't read value, out of bounds");
+        }
+        auto val = *reinterpret_cast<const TVal*>(pos_);
+        pos_ += sz;
+        return val;
+    }
+
+    size_t space_left() const {
+        return end_ - pos_;
+    }
+
+    const unsigned char* pos() const {
+        return pos_;
+    }
+};
+
+/** Base128 encoder reimplementation
+  * New encoding is used. Stream is divided into 8byte chunks.
+  * Each 8byte chunk is precedded by 1byte control block.
+  * If i-th bit in control block is set then i-th byte of the block
+  * is an end of the integer value. It takes one byte to store integers in range [0 - 0xFF],
+  * two bytes to store integers in range [0x100 - 0xFFFF], etc.
+  * Integer values can't cross block border, so you can't save value 0xFFFFFFFF if there is only
+  * three bytes left in block. This value should be stored in the next block.
+  * This method internal fragmentation because sometimes blocks wouldn't be filled entirely.
+  */
+struct Base128StreamWriterV2 {
     unsigned char* outbuf_;  // output buffer
     size_t size_;            // size of the output buffer
     size_t pos_;             // position in output buffer
@@ -147,7 +284,7 @@ struct Base128StreamWriter {
         BLOCK_SIZE = 9
     };
 
-    Base128StreamWriter(unsigned char* begin, const unsigned char* end) 
+    Base128StreamWriterV2(unsigned char* begin, const unsigned char* end)
         : outbuf_(begin)
         , size_(end - begin)
         , pos_(1)
@@ -156,7 +293,7 @@ struct Base128StreamWriter {
     {
     }
 
-    Base128StreamWriter(Base128StreamWriter& other)
+    Base128StreamWriterV2(Base128StreamWriterV2& other)
         : outbuf_(other.outbuf_)
         , size_(other.size_)
         , pos_(1)
@@ -264,7 +401,7 @@ struct Base128StreamWriter {
 };
 
 //! Base128 decoder
-struct Base128StreamReader {
+struct Base128StreamReaderV2 {
     const unsigned char* input_;
     const size_t size_;
     size_t pos_;
@@ -276,7 +413,7 @@ struct Base128StreamReader {
         BLOCK_SIZE = 9
     };
 
-    Base128StreamReader(const unsigned char* begin, const unsigned char* end)
+    Base128StreamReaderV2(const unsigned char* begin, const unsigned char* end)
         : input_(begin)
         , size_(end - begin)
         , pos_(1)
@@ -532,7 +669,7 @@ struct CompressionUtil {
       */
     static
     size_t compress_doubles(const std::vector<double> &input,
-                                Base128StreamWriter &wstream);
+                                Base128StreamWriter &wstream, size_t begin=0, size_t end=0);
 
     /** Decompress list of doubles.
       * @param buffer input data
@@ -556,21 +693,15 @@ struct CompressionUtil {
       * in time order everythin ordered by time first and by id second.
       */
     static bool convert_from_time_order(const UncompressedChunk &header, UncompressedChunk* out);
-
-    /** Compress list of sorted integers using variable length encoding.
-      */
-    static size_t compress_sorted(void* buffer, size_t buffer_size, const uint64_t* input, size_t input_size);
-
-    /** Decompress list of sorted integers using variable length encoding.
-      */
-    static void decompress_sorted(const void* buffer, size_t buffer_size, uint64_t* output, size_t output_size);
 };
 
+// TODO: this is obsolete, remove
 // int64_t -> Delta -> ZigZag -> RLE -> Base128
 typedef RLEStreamWriter<int64_t> __RLEWriter;
 typedef ZigZagStreamWriter<__RLEWriter, int64_t> __ZigZagWriter;
 typedef DeltaStreamWriter<__ZigZagWriter, int64_t> DeltaRLEWriter;
 
+// TODO: this is obsolete, remove
 // Base128 -> RLE -> ZigZag -> Delta -> int64_t
 typedef RLEStreamReader<int64_t> __RLEReader;
 typedef ZigZagStreamReader<__RLEReader, int64_t> __ZigZagReader;
