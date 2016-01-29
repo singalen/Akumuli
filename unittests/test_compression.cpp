@@ -136,7 +136,6 @@ void test_doubles_compression(std::vector<double> input) {
     Base128StreamWriter wstream(buffer.data(), buffer.data() + buffer.size());
     size_t nblocks = CompressionUtil::compress_doubles(input, wstream);
     std::vector<double> output;
-    output.resize(input.size());
     Base128StreamReader rstream(buffer.data(), buffer.data() + buffer.size());
     CompressionUtil::decompress_doubles(rstream, nblocks, &output);
 
@@ -275,7 +274,11 @@ void test_chunk_header_compression() {
     BOOST_REQUIRE_EQUAL_COLLECTIONS(expected.timestamps.begin(), expected.timestamps.end(),
                                     actual.timestamps.begin(), actual.timestamps.end());
     for (int i = 0; i < NROWS*NSER; i++) {
-        BOOST_REQUIRE_EQUAL(expected.values.at(i), actual.values.at(i));
+        if(expected.values.at(i) != actual.values.at(i)) {
+            std::stringstream fmt;
+            fmt << "expected.values.at(" << i << ") != actual.values.at(" << i << ")";
+            BOOST_FAIL(fmt.str().c_str());
+        }
     }
 }
 

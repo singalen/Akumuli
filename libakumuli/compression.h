@@ -203,6 +203,10 @@ struct Base128StreamWriter {
         return end_ - pos_;
     }
 
+    uint8_t* pos() {
+        return pos_;
+    }
+
     /** Try to allocate space inside a stream in current position without
       * compression (needed for size prefixes).
       * @returns pointer to the value inside the stream

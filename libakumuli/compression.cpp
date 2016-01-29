@@ -189,7 +189,7 @@ size_t CompressionUtil::compress_doubles(std::vector<double> const& input,
         unsigned char flags = prev_flag << 4;
         wstream.put_raw(flags);
         encode_value(wstream, prev_diff, prev_flag);
-        //encode_value(wstream, 0ull, 0);
+        encode_value(wstream, 0ull, 0);
     }
     return end - begin;
 }
@@ -199,8 +199,7 @@ void CompressionUtil::decompress_doubles(Base128StreamReader&     rstream,
                                          std::vector<double>     *output)
 {
     PredictorT predictor(PREDICTOR_N);
-    auto end = output->end();
-    auto it = output->begin();
+    auto it = std::back_inserter(*output);
     int flags = 0;
     for (auto i = 0u; i < numvalues; i++) {
         unsigned char flag = 0;
@@ -218,12 +217,7 @@ void CompressionUtil::decompress_doubles(Base128StreamReader&     rstream,
         uint64_t predicted = predictor.predict_next();
         curr.bits = predicted ^ diff;
         predictor.update(curr.bits);
-        // put
-        if (it < end) {
-            *it++ = curr.real;
-        } else {
-            throw StreamOutOfBounds("can't decode doubles, not enough space inside the out buffer");
-        }
+        *it++ = curr.real;
     }
 }
 
@@ -260,6 +254,7 @@ using ZDeltaRleReader = DeltaStreamReader<ZigZagStreamReader<RLEStreamReader<int
 
 using DeltaRleReader = DeltaStreamReader<RLEStreamReader<uint64_t>, uint64_t>;
 
+static const int BLOCK_HEADER_SIZE = 4*sizeof(uint32_t) + 2*sizeof(aku_ParamId);
 
 static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
                                          size_t ixbegin, size_t ixend,
@@ -270,9 +265,8 @@ static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
         // something goes really wrong
         throw StreamOutOfBounds("compression alg. failure");
     }
-    const int HDR_SZ = 4*sizeof(uint32_t) + 2*sizeof(aku_ParamId);
     std::vector<uint8_t> result;
-    size_t buffer_size = (ixend - ixbegin) * bytes_per_el + HDR_SZ;
+    size_t buffer_size = (ixend - ixbegin) * bytes_per_el + BLOCK_HEADER_SIZE;
     result.resize(buffer_size);
 
     // Reserve space for metadata
@@ -331,7 +325,7 @@ static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
         CompressionUtil::compress_doubles(data.values, wstream, ixbegin, ixend);
         size_t payload_end = wstream.size();
         *payload_stream_sz = payload_end - payload_begin;
-        result.resize(wstream.size() + HDR_SZ);
+        result.resize(wstream.pos() - result.data());
     } catch(StreamOutOfBounds const&) {
         // free memory
         {
@@ -387,6 +381,9 @@ aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
 
 static aku_Status decode_block(UncompressedChunk *header, const uint8_t* begin, const uint8_t* end, size_t* out_size_bytes) {
     try {
+        auto origin = begin;
+        const auto BUFFER_SPACE = static_cast<uint32_t>(end - begin);
+
         if (end - begin < 32) {
             throw StreamOutOfBounds("chunk too small");
         }
@@ -404,9 +401,8 @@ static aku_Status decode_block(UncompressedChunk *header, const uint8_t* begin, 
         const uint32_t payload_stream_sz = *reinterpret_cast<const uint32_t*>(begin);
         begin += sizeof(uint32_t);
 
-        *out_size_bytes = payload_stream_sz + paramid_stream_sz + tmstamp_stream_sz;
-        const auto BYTES_REQUIRED = static_cast<uint32_t>(end - begin);
-        if (*out_size_bytes > BYTES_REQUIRED) {
+        auto bytes_to_read = payload_stream_sz + paramid_stream_sz + tmstamp_stream_sz + BLOCK_HEADER_SIZE;
+        if (bytes_to_read > BUFFER_SPACE) {
             return AKU_EOVERFLOW;
         }
 
@@ -428,6 +424,9 @@ static aku_Status decode_block(UncompressedChunk *header, const uint8_t* begin, 
 
         CompressionUtil::decompress_doubles(rstream, num_elements, &header->values);
 
+        *out_size_bytes = rstream.pos() - origin;
+        assert(*out_size_bytes == bytes_to_read);
+
     } catch (StreamOutOfBounds const&) {
         return AKU_EBAD_DATA;
     }
@@ -446,8 +445,7 @@ aku_Status CompressionUtil::decode_chunk( UncompressedChunk   *header
     auto total_elements = *reinterpret_cast<const uint32_t*>(pbegin);
     pbegin += sizeof(uint32_t);
 
-    // NOTE: space for value CompressionUtil::decompress_doubles should be reserved beforehand
-    header->values.resize(total_elements);
+    header->values.reserve(total_elements);
     header->paramids.reserve(total_elements);
     header->timestamps.reserve(total_elements);
 
