@@ -189,7 +189,7 @@ size_t CompressionUtil::compress_doubles(std::vector<double> const& input,
         unsigned char flags = prev_flag << 4;
         wstream.put_raw(flags);
         encode_value(wstream, prev_diff, prev_flag);
-        encode_value(wstream, 0ull, 0);
+        //encode_value(wstream, 0ull, 0);
     }
     return end - begin;
 }
@@ -285,6 +285,12 @@ static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
     uint32_t* payload_stream_sz = reinterpret_cast<uint32_t*>(begin);
     begin += sizeof(uint32_t);
 
+// TODO: remove
+std::cout << "num_elements " << (ixend - ixbegin) << std::endl;
+if ((ixend - ixbegin) == 1) {
+    std::cout << "1" << std::endl;
+}
+
     try {
         // Data should contain at least one element
         assert(data.paramids.size() > 0);
@@ -301,6 +307,8 @@ static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
         }
         idwriter.commit();
         *paramid_stream_sz = (uint32_t)idwriter.size();
+    // TODO: remove
+    std::cout << "paramid stream sz " << (*paramid_stream_sz) << std::endl;
 
         // Write Timestamp stream
         // Timestamps can decrease, because of that we should use zig-zag encoding. To be able to do this
@@ -319,14 +327,23 @@ static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
         *tmstamp_stream_sz = (uint32_t)tswriter.size();
         *out_min = mints;
         *out_max = maxts;
+    // TODO: remove
+    std::cout << "timestamp stream sz " << (*tmstamp_stream_sz) << std::endl;
 
         // Write Payload stream
         size_t payload_begin = wstream.size();
-        CompressionUtil::compress_doubles(data.values, wstream, ixbegin, ixend);
+        auto compress_res = CompressionUtil::compress_doubles(data.values, wstream, ixbegin, ixend);
         size_t payload_end = wstream.size();
         *payload_stream_sz = payload_end - payload_begin;
+    // TODO: remove
+    std::cout << "payload stream sz " << (*payload_stream_sz) << " compressed " << compress_res << std::endl;
         result.resize(wstream.pos() - result.data());
+        assert(static_cast<size_t>(*payload_stream_sz + *paramid_stream_sz + *tmstamp_stream_sz + BLOCK_HEADER_SIZE) == result.size());
+    // TODO: remove
+    std::cout << "result size " << result.size() << std::endl;
     } catch(StreamOutOfBounds const&) {
+    // TODO: remove
+    std::cout << "StreamOutOfBounds" << std::endl;
         // free memory
         {
             std::vector<uint8_t> tmp;
@@ -363,6 +380,7 @@ aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
     aku_Timestamp mints = ~0, maxts = 0;
     for (auto ix: indexes) {
         aku_Timestamp itmin, itmax;
+
         std::vector<uint8_t> buffer = encode_block(data, ix.first, ix.second, 10, &itmin, &itmax);
         if (static_cast<size_t>(end - begin) > buffer.size()) {
             memcpy(begin, buffer.data(), buffer.size());
@@ -400,6 +418,15 @@ static aku_Status decode_block(UncompressedChunk *header, const uint8_t* begin, 
         begin += sizeof(uint32_t);
         const uint32_t payload_stream_sz = *reinterpret_cast<const uint32_t*>(begin);
         begin += sizeof(uint32_t);
+
+    // TODO: remove
+    std::cout << "num_elements " << num_elements << std::endl;
+    std::cout << "paramid_stream_sz " << paramid_stream_sz << std::endl;
+    std::cout << "tmstamp_stream_sz " << tmstamp_stream_sz << std::endl;
+    std::cout << "payload_stream_sz " << payload_stream_sz << std::endl;
+    if (num_elements == 1) {
+        std::cout << "1" << std::endl;
+    }
 
         auto bytes_to_read = payload_stream_sz + paramid_stream_sz + tmstamp_stream_sz + BLOCK_HEADER_SIZE;
         if (bytes_to_read > BUFFER_SPACE) {
