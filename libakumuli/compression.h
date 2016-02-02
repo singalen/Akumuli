@@ -629,7 +629,7 @@ struct RLEStreamReader {
     }
 
     unsigned char* pos() const {
-        return stream_.pos_();
+        return stream_.pos();
     }
 };
 

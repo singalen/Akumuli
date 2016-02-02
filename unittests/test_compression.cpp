@@ -135,10 +135,13 @@ void test_doubles_compression(std::vector<double> input) {
     buffer.resize(input.size()*10);
     Base128StreamWriter wstream(buffer.data(), buffer.data() + buffer.size());
     size_t nblocks = CompressionUtil::compress_doubles(input, wstream);
+    size_t bytes2write = wstream.size();
     std::vector<double> output;
     Base128StreamReader rstream(buffer.data(), buffer.data() + buffer.size());
     CompressionUtil::decompress_doubles(rstream, nblocks, &output);
+    size_t bytes2read = rstream.pos() - buffer.data();
 
+    BOOST_REQUIRE_EQUAL(bytes2write, bytes2read);
     BOOST_REQUIRE_EQUAL(input.size(), output.size());
     for(auto i = 0u; i < input.size(); i++) {
         auto actual = input.at(i);
@@ -170,6 +173,13 @@ BOOST_AUTO_TEST_CASE(Test_doubles_compression_2_series) {
         200.5,
         100.0996,
         200.5001,
+    };
+    test_doubles_compression(input);
+}
+
+BOOST_AUTO_TEST_CASE(Test_doubles_compression_3_series) {
+    std::vector<double> input = {
+        0,
     };
     test_doubles_compression(input);
 }
