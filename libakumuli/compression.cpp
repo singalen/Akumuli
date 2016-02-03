@@ -3,7 +3,10 @@
 
 #include <unordered_map>
 #include <algorithm>
+#include <numeric>
 #include <iostream> // TODO: remove me
+
+#include <omp.h>
 
 namespace Akumuli {
 
@@ -364,22 +367,40 @@ aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
     *reinterpret_cast<uint32_t*>(begin) = (uint32_t)data.values.size();
     begin += sizeof(uint32_t);
 
-    aku_Timestamp mints = ~0, maxts = 0;
-    for (auto ix: indexes) {
-        aku_Timestamp itmin, itmax;
+    std::vector<std::vector<uint8_t>> buffers;
+    std::vector<aku_Timestamp> mints;
+    std::vector<aku_Timestamp> maxts;
+    buffers.resize(indexes.size());
+    mints.resize(indexes.size());
+    maxts.resize(indexes.size());
 
-        std::vector<uint8_t> buffer = encode_block(data, ix.first, ix.second, 10, &itmin, &itmax);
+    #pragma omp parallel
+    {
+        #pragma omp single
+        for (size_t i = 0u; i < indexes.size(); i++) {
+            #pragma omp task
+            {
+                auto ix = indexes.at(i);
+                aku_Timestamp itmin, itmax;
+                std::vector<uint8_t> buffer = encode_block(data, ix.first, ix.second, 10, &itmin, &itmax);
+                std::swap(buffers.at(i), buffer);
+                mints.at(i) = itmin;
+                maxts.at(i) = itmax;
+            }
+        }
+    }
+    #pragma omp taskwait
+    for (auto& buffer: buffers) {
+        // do the memcpy thing
         if (static_cast<size_t>(end - begin) > buffer.size()) {
             memcpy(begin, buffer.data(), buffer.size());
             begin += buffer.size();
-            mints = std::min(mints, itmin);
-            maxts = std::max(maxts, itmax);
         } else {
             return AKU_EOVERFLOW;
         }
     }
-    *ts_begin = mints;
-    *ts_end = maxts;
+    *ts_begin = std::accumulate(mints.begin(), mints.end(), std::numeric_limits<aku_Timestamp>::max(), [](aku_Timestamp lhs, aku_Timestamp rhs) { return std::min(lhs, rhs); });
+    *ts_end = std::accumulate(maxts.begin(), maxts.end(), std::numeric_limits<aku_Timestamp>::min(), [](aku_Timestamp lhs, aku_Timestamp rhs) { return std::max(lhs, rhs); });
     *n_elements = (uint32_t)data.paramids.size();
     return writer->commit(begin - origin);
 }

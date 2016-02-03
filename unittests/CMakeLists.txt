@@ -362,3 +362,18 @@ target_link_libraries(
 )
 
 add_test(invertedindex test_invertedindex)
+
+# Thread pool test
+add_executable(
+    test_threadpool
+    test_threadpool.cpp
+#   this is a header only lib
+)
+
+target_link_libraries(
+    test_threadpool
+    ${Boost_LIBRARIES}
+    pthread
+)
+
+add_test(threadpool test_threadpool)

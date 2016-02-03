@@ -19,7 +19,7 @@ using namespace std;
 
 int DB_SIZE = 8;
 uint64_t NUM_ITERATIONS = 100*1000*1000ul;
-int CHUNK_SIZE = 5000;
+int CHUNK_SIZE = 50000;
 
 const char* DB_NAME = "db";
 const char* DB_PATH = "";
