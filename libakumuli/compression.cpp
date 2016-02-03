@@ -222,21 +222,28 @@ void CompressionUtil::decompress_doubles(Base128StreamReader&     rstream,
     }
 }
 
-
 static std::vector<std::pair<size_t, size_t>> split_chunk(const UncompressedChunk& data, int N) {
     std::vector<std::pair<size_t, size_t>> indexes;
     size_t sz = data.paramids.size();
     size_t base = 0;
+    if (sz/N == 0) {
+        indexes.push_back(std::make_pair(0, data.paramids.size()));
+    }
     for (int i = 0; i < N; i++) {
         // from base to sz/N + something
-        auto begin = base;
+        auto begin = base;  // this guarantees that data is continous (prev.end == current.begin)
         auto end = base + sz/N;
         if (begin == end) {
             break;
-        }
+        }  // this line guarantees that next line will always work correctly
         auto lastid = data.paramids.at(end - 1);
-        auto it = std::find_if(data.paramids.cbegin() + end, data.paramids.cend(), [lastid](aku_ParamId id) { return id != lastid; });
-        end = it - data.paramids.cbegin();
+        auto it = std::partition_point(data.paramids.cbegin() + end, data.paramids.cend(), [lastid](aku_ParamId id) { return id != lastid; });
+        if (i == N-1) {
+            // There can be at least N items left on last iteration
+            end = data.paramids.size();
+        } else {
+            end = it - data.paramids.cbegin();
+        }
         indexes.push_back(std::make_pair(begin, end));
         base = end;
         if (base == sz) {
