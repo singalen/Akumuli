@@ -11,6 +11,7 @@
 #include <sstream>
 #include <fstream>
 #include <boost/filesystem.hpp>
+#include <omp.h>
 
 using namespace Akumuli;
 namespace fs = boost::filesystem;
@@ -277,6 +278,8 @@ TestRunResults run_tests(fs::path path, bool bench) {
 }
 
 int main(int argc, char** argv) {
+    auto nthreads = omp_get_max_threads();
+    omp_set_num_threads(nthreads);
 
     if (argc < 2) {
         std::cout << "Path to dataset required" << std::endl;
@@ -311,19 +314,19 @@ int main(int argc, char** argv) {
         double maxdouble = std::numeric_limits<double>::max();
         auto perf = std::accumulate(run.perf.begin(), run.perf.end(), maxdouble, [](double a, double b) { return std::min(a, b); });
         auto gz_perf = std::accumulate(run.gz_perf.begin(), run.gz_perf.end(), maxdouble, [](double a, double b) { return std::min(a, b); });
-        std::cout << run.file_name << " | " <<
-                     run.nelements << " | " <<
-                     run.uncompressed << " | " <<
-                     run.compressed << " | " <<
-                     run.gz_compressed << " | " <<
-                     run.compression_ratio << " | " <<
-                     run.gz_compression_ratio << " | " <<
-                     run.bytes_per_element << " | " <<
-                     run.gz_bytes_per_element << " | " <<
+        std::cout << //run.file_name << " | " <<
+                     //run.nelements << " | " <<
+                     //run.uncompressed << " | " <<
+                     //run.compressed << " | " <<
+                     //run.gz_compressed << " | " <<
+                     //run.compression_ratio << " | " <<
+                     //run.gz_compression_ratio << " | " <<
+                     //run.bytes_per_element << " | " <<
+                     //run.gz_bytes_per_element << " | " <<
                      perf << " | " <<
                      gz_perf << " | " <<
-                     (gz_perf/perf) << " | " <<
-                     (double(run.compressed)/run.gz_compressed) << " | " <<
+                     //(gz_perf/perf) << " | " <<
+                     //(double(run.compressed)/run.gz_compressed) << " | " <<
                      std::endl;
 
     }

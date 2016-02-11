@@ -10,6 +10,94 @@
 
 namespace Akumuli {
 
+static inline uint32_t upper_pow2(size_t val) {
+    return 1 << (64 - __builtin_clzl(val - 1));
+}
+
+struct Buffer {
+    uint8_t* data_;
+    size_t   size_;
+
+    Buffer(size_t size)
+        : data_((uint8_t*)malloc(upper_pow2(size)))
+        , size_(size)
+    {
+        if (data_ == nullptr) {
+            throw std::runtime_error("OOM");
+        }
+    }
+
+    Buffer()
+        : data_(nullptr)
+        , size_(0ull)
+    {
+    }
+
+    void cleanup() {
+        if (data_) {
+            free(data_);
+            data_ = nullptr;
+        }
+    }
+
+    void resize(size_t size) {
+        if (size > size_) {
+            throw std::runtime_error("Memory overwrite");
+        }
+        size_ = size;
+    }
+
+    ~Buffer() {
+        cleanup();
+    }
+
+    Buffer(const Buffer&) = delete;
+    Buffer& operator = (const Buffer&) = delete;
+
+    Buffer(Buffer&& other)
+        : data_(other.data_)
+        , size_(other.size_)
+    {
+        other.data_ = nullptr;
+        other.size_ = 0ull;
+    }
+
+    Buffer& operator = (Buffer&& other) {
+        if (&other != this) {
+            cleanup();
+            data_ = other.data_;
+            size_ = other.size_;
+            other.data_ = nullptr;
+            other.size_ = 0ull;
+        }
+        return *this;
+    }
+
+    uint8_t* data() {
+        return data_;
+    }
+
+    size_t size() const {
+        return size_;
+    }
+};
+
+} // namespace Akumuli
+
+
+namespace std {
+    template<>
+    void swap(Akumuli::Buffer& lhs, Akumuli::Buffer& rhs) {
+        Akumuli::Buffer tmp;
+        tmp = std::move(lhs);
+        lhs = std::move(rhs);
+        rhs = std::move(tmp);
+    }
+} // namespace std
+
+
+namespace Akumuli {
+
 StreamOutOfBounds::StreamOutOfBounds(const char* msg) : std::runtime_error(msg)
 {
 }
@@ -267,18 +355,24 @@ using DeltaRleReader = DeltaStreamReader<RLEStreamReader<uint64_t>, uint64_t>;
 
 static const int BLOCK_HEADER_SIZE = 4*sizeof(uint32_t) + 2*sizeof(aku_ParamId);
 
-static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
-                                         size_t ixbegin, size_t ixend,
-                                         size_t bytes_per_el,
-                                         aku_Timestamp* out_min,
-                                         aku_Timestamp* out_max) {
+static void encode_block(const UncompressedChunk& data,
+                         size_t ixbegin, size_t ixend,
+                         size_t bytes_per_el,
+                         aku_Timestamp* out_min,
+                         aku_Timestamp* out_max,
+                         Buffer* out_buffer
+                         ) {
     if (bytes_per_el > 128) {
         // something goes really wrong
         throw StreamOutOfBounds("compression alg. failure");
     }
-    std::vector<uint8_t> result;
+    Buffer result;
     size_t buffer_size = (ixend - ixbegin) * bytes_per_el + BLOCK_HEADER_SIZE;
-    result.resize(buffer_size);
+    if (out_buffer->size() >= buffer_size) {
+        std::swap(result, *out_buffer);
+    } else {
+        result = Buffer(buffer_size);
+    }
 
     // Reserve space for metadata
     uint8_t* begin = result.data();
@@ -338,12 +432,13 @@ static std::vector<uint8_t> encode_block(const UncompressedChunk& data,
         *payload_stream_sz = payload_end - payload_begin;
         result.resize(wstream.pos() - result.data());
         assert(static_cast<size_t>(*payload_stream_sz + *paramid_stream_sz + *tmstamp_stream_sz + BLOCK_HEADER_SIZE) == result.size());
+
+        // return result
+        std::swap(*out_buffer, result);
     } catch(StreamOutOfBounds const&) {
         // TODO: add this information to self-monitoring
-        std::vector<uint8_t> tmp = std::move(encode_block(data, ixbegin, ixend, bytes_per_el * 2, out_min, out_max));
-        std::swap(result, tmp);
+        encode_block(data, ixbegin, ixend, bytes_per_el * 2, out_min, out_max, out_buffer);
     }
-    return std::move(result);
 }
 
 aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
@@ -361,18 +456,25 @@ aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
         return AKU_EOVERFLOW;
     }
 
-    auto indexes = split_chunk(data, 4);
+    auto indexes = split_chunk(data, 8);
     *reinterpret_cast<uint32_t*>(begin) = (uint32_t)indexes.size();
     begin += sizeof(uint32_t);
     *reinterpret_cast<uint32_t*>(begin) = (uint32_t)data.values.size();
     begin += sizeof(uint32_t);
 
-    std::vector<std::vector<uint8_t>> buffers;
+    std::vector<Buffer> buffers;
     std::vector<aku_Timestamp> mints;
     std::vector<aku_Timestamp> maxts;
     buffers.resize(indexes.size());
     mints.resize(indexes.size());
     maxts.resize(indexes.size());
+
+    for (size_t i = 0u; i < indexes.size(); i++) {
+        auto pair = indexes.at(i);
+        size_t buffer_size = (pair.second - pair.first) * 10 + BLOCK_HEADER_SIZE;
+        Buffer tmp(buffer_size);
+        std::swap(buffers.at(i), tmp);
+    }
 
     #pragma omp parallel
     {
@@ -382,8 +484,7 @@ aku_Status CompressionUtil::encode_chunk( uint32_t           *n_elements
             {
                 auto ix = indexes.at(i);
                 aku_Timestamp itmin, itmax;
-                std::vector<uint8_t> buffer = encode_block(data, ix.first, ix.second, 10, &itmin, &itmax);
-                std::swap(buffers.at(i), buffer);
+                encode_block(data, ix.first, ix.second, 10, &itmin, &itmax, &buffers.at(i));
                 mints.at(i) = itmin;
                 maxts.at(i) = itmax;
             }

@@ -12,6 +12,7 @@
 #include <apr_mmap.h>
 #include <apr_general.h>
 #include <sys/time.h>
+#include <omp.h>
 
 #include "akumuli.h"
 
@@ -228,13 +229,16 @@ void logger_(aku_LogLevel level, const char * msg) {
 
 int main(int cnt, const char** args)
 {
+    auto nthreads = omp_get_max_threads();
+    omp_set_num_threads(nthreads);
+
     aku_initialize(nullptr);
 
     aku_FineTuneParams params = {};
     params.debug_mode = 0;
     params.durability = /*AKU_MAX_DURABILITY; //*/AKU_MAX_WRITE_SPEED;
     params.enable_huge_tlb = 0;
-    params.compression_threshold = 100000;
+    params.compression_threshold = 10000;
     params.window_size = 600;
     params.max_cache_size = 10*1024*1024;  // 10Mb
 
