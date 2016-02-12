@@ -65,6 +65,23 @@ struct TimeSeriesValue {
 };
 
 
+//! Represents moment in time relative to present (for example 100s back from now).
+struct Instant {
+    virtual ~Instant() = default;
+
+    //! Return `true` if timestamp is greater then instant
+    virtual bool gt(aku_Timestamp ts) = 0;
+};
+
+
+//! System timer based instant
+struct STInstant : Instant {
+    virtual bool gt(aku_Timestamp ts) {
+        throw "not implemented";
+    }
+};
+
+
 /** Time-series sequencer.
   * @brief Akumuli can accept unordered time-series (this is the case when
   * clocks of the different time-series sources are slightly out of sync).
@@ -89,7 +106,7 @@ struct Sequencer {
     PSortedRun                   key_;
     const aku_Duration           window_size_;
     aku_Timestamp                top_timestamp_;    //< Largest timestamp ever seen
-    aku_Timestamp                checkpoint_;       //< Last checkpoint timestamp
+    std::unique_ptr<Instant>     checkpoint_;
     mutable std::atomic_int      sequence_number_;  //< Flag indicates that merge operation is in progress and
                                                     //< search will return inaccurate results.
                                                     //< If progress_flag_ is odd - merge is in progress if it is
@@ -98,7 +115,7 @@ struct Sequencer {
     mutable std::vector<RWLock>  run_locks_;
     const size_t                 c_threshold_;      //< Compression threshold
 
-    Sequencer(aku_FineTuneParams const& config);
+    Sequencer(aku_FineTuneParams const& config, std::unique_ptr<Instant> cp);
 
     /** Add new sample to sequence.
       * @brief Timestamp of the sample can be out of order.

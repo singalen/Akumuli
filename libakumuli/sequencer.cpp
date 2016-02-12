@@ -92,7 +92,7 @@ bool chunk_order_LT (TimeSeriesValue const& lhs, TimeSeriesValue const& rhs) {
 
 // Sequencer
 
-Sequencer::Sequencer(const aku_FineTuneParams &config)
+Sequencer::Sequencer(const aku_FineTuneParams &config, std::unique_ptr<Instant> cp)
     : window_size_(config.window_size)
     , top_timestamp_()
     , checkpoint_(0u)
