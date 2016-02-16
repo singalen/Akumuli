@@ -111,9 +111,41 @@ struct SimpleSlidingWindow {
         top_timestamp_ = ts;
         return SlidingWindowMatch::PRESENT;
     }
-
 };
 
+struct SimpleSlidingWindowV2 {
+    const aku_Duration           window_size_;
+    const aku_Duration           step_size_;
+    aku_Timestamp                top_timestamp_;    //< Largest timestamp ever seen
+    aku_Timestamp                checkpoint_;       //< Last checkpoint timestamp
+
+    SimpleSlidingWindowV2(aku_Duration window_size)
+        : window_size_(window_size)
+        , step_size_(window_size/32ull)
+        , top_timestamp_(0ull)
+        , checkpoint_(0ull)
+    {
+    }
+
+    virtual SlidingWindowMatch classify(aku_Timestamp ts) {
+        if (ts < top_timestamp_) {
+            auto delta = top_timestamp_ - ts;
+            if (delta > window_size_) {
+                return SlidingWindowMatch::LATE_WRITE;
+            }
+            return SlidingWindowMatch::PRESENT;
+        }
+        auto point = ts / step_size_;
+        if (point > checkpoint_) {
+            // Create new checkpoint
+            checkpoint_ = point;
+            top_timestamp_ = ts;
+            return SlidingWindowMatch::PRESENT_SW_MOVED;
+        }
+        top_timestamp_ = ts;
+        return SlidingWindowMatch::PRESENT;
+    }
+};
 
 /** Time-series sequencer.
   * @brief Akumuli can accept unordered time-series (this is the case when
@@ -138,7 +170,7 @@ struct Sequencer {
     std::vector<PSortedRun>      ready_;            //< Ready to merge
     PSortedRun                   key_;
     //
-    SimpleSlidingWindow          sliding_window_;
+    SimpleSlidingWindowV2        sliding_window_;
     //
     mutable std::atomic_int      sequence_number_;  //< Flag indicates that merge operation is in progress and
                                                     //< search will return inaccurate results.

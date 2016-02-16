@@ -20,7 +20,7 @@
 #include "util.h"
 #include "compression.h"
 
-#include <future>
+#include <iostream>
 
 #include <boost/heap/skew_heap.hpp>
 #include <boost/range.hpp>
@@ -121,10 +121,12 @@ int Sequencer::make_checkpoint_(aku_Timestamp boarder) {
             } else {
                 // it is in between of the sorted run - split
                 PSortedRun run(new SortedRun());
-                copy(sorted_run->begin(), it, back_inserter(*run));  // copy old
+                run->resize(std::distance(sorted_run->begin(), it));
+                copy(sorted_run->begin(), it, run->begin());  // copy old
                 ready_.push_back(move(run));
                 run.reset(new SortedRun());
-                copy(it, sorted_run->end(), back_inserter(*run));  // copy new
+                run->resize(std::distance(it, sorted_run->end()));
+                copy(it, sorted_run->end(), run->begin());  // copy new
                 new_runs.push_back(move(run));
             }
         }
@@ -413,11 +415,11 @@ aku_Status Sequencer::merge_and_compress(PageHeader* target, bool enforce_write)
     aku_Status status = AKU_SUCCESS;
 
     while(!ready_.empty()) {
+        int threshold = (int)c_threshold_;
         UncompressedChunk chunk_header;
         chunk_header.paramids.reserve(c_threshold_);
         chunk_header.timestamps.reserve(c_threshold_);
         chunk_header.values.reserve(c_threshold_);
-        int threshold = (int)c_threshold_;
         auto push_to_header = [&](TimeSeriesValue const& val) {
             if (threshold-->0) {
                 val.add_to_header(&chunk_header);

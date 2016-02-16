@@ -4,6 +4,8 @@
 #                                            #
 ##############################################
 
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fno-omit-frame-pointer")
+
 include_directories(../akumulid)
 include_directories(../libakumuli)
 
