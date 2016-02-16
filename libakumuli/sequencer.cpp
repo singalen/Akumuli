@@ -93,9 +93,7 @@ bool chunk_order_LT (TimeSeriesValue const& lhs, TimeSeriesValue const& rhs) {
 // Sequencer
 
 Sequencer::Sequencer(const aku_FineTuneParams &config)
-    : window_size_(config.window_size)
-    , top_timestamp_()
-    , checkpoint_(0u)
+    : sliding_window_(config.window_size)
     , sequence_number_ {0}
     , run_locks_(RUN_LOCK_FLAGS_SIZE)
     , c_threshold_(config.compression_threshold)
@@ -104,25 +102,14 @@ Sequencer::Sequencer(const aku_FineTuneParams &config)
     key_->push_back(TimeSeriesValue());
 }
 
-//! Checkpoint id = ⌊timestamp/window_size⌋
-aku_Timestamp Sequencer::get_checkpoint_(aku_Timestamp ts) const {
-    return ts / window_size_;
-}
-
-//! Convert checkpoint id to timestamp
-aku_Timestamp Sequencer::get_timestamp_(aku_Timestamp cp) const {
-    return cp*window_size_;
-}
 
 // move sorted runs to ready_ collection
-int Sequencer::make_checkpoint_(aku_Timestamp new_checkpoint) {
+int Sequencer::make_checkpoint_(aku_Timestamp boarder) {
     int flag = sequence_number_.fetch_add(1) + 1;
     if (flag % 2 != 0) {
-        auto old_top = get_timestamp_(checkpoint_);
-        checkpoint_ = new_checkpoint;
         vector<PSortedRun> new_runs;
         for (auto& sorted_run: runs_) {
-            auto it = lower_bound(sorted_run->begin(), sorted_run->end(), TimeSeriesValue(old_top, AKU_LIMITS_MAX_ID, 0));
+            auto it = lower_bound(sorted_run->begin(), sorted_run->end(), TimeSeriesValue(boarder, AKU_LIMITS_MAX_ID, 0));
             // Check that compression threshold is reached
             if (it == sorted_run->begin()) {
                 // all timestamps are newer than old_top, do nothing
@@ -169,20 +156,21 @@ int Sequencer::make_checkpoint_(aku_Timestamp new_checkpoint) {
   */
 std::tuple<aku_Status, int> Sequencer::check_timestamp_(aku_Timestamp ts) {
     aku_Status error_code = AKU_SUCCESS;
-    if (ts < top_timestamp_) {
-        auto delta = top_timestamp_ - ts;
-        if (delta > window_size_) {
-            error_code = AKU_ELATE_WRITE;
-        }
-        return make_tuple(error_code, 0);
-    }
-    auto point = get_checkpoint_(ts);
+    auto result = sliding_window_.classify(ts);
     int flag = 0;
-    if (point > checkpoint_) {
-        // Create new checkpoint
-        flag = make_checkpoint_(point);
-    }
-    top_timestamp_ = ts;
+    switch(result) {
+    case SlidingWindowMatch::FUTURE_WRITE:
+        error_code = AKU_EOVERFLOW;
+        break;
+    case SlidingWindowMatch::LATE_WRITE:
+        error_code = AKU_ELATE_WRITE;
+        break;
+    case SlidingWindowMatch::PRESENT:
+        break;
+    case SlidingWindowMatch::PRESENT_SW_MOVED:
+        flag = make_checkpoint_(ts - sliding_window_.window_size_);
+        break;
+    };
     return make_tuple(error_code, flag);
 }
 
@@ -477,8 +465,8 @@ aku_Status Sequencer::merge_and_compress(PageHeader* target, bool enforce_write)
 }
 
 std::tuple<aku_Timestamp, int> Sequencer::get_window() const {
-    return std::make_tuple(top_timestamp_ > window_size_ ? top_timestamp_ - window_size_
-                                                         : top_timestamp_,
+    return std::make_tuple(sliding_window_.top_timestamp_ > sliding_window_.window_size_ ? sliding_window_.top_timestamp_ - sliding_window_.window_size_
+                                                         : sliding_window_.top_timestamp_,
                            sequence_number_.load());
 }
 

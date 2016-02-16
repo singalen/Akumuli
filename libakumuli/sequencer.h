@@ -65,6 +65,56 @@ struct TimeSeriesValue {
 };
 
 
+enum class SlidingWindowMatch {
+    FUTURE_WRITE,
+    PRESENT,
+    PRESENT_SW_MOVED,
+    LATE_WRITE,
+};
+
+struct SlidingWindow {
+    virtual ~SlidingWindow() = default;
+    virtual SlidingWindowMatch classify(aku_Timestamp ts) = 0;
+};
+
+
+/** Implements sequencer sliding window alg. (should be used for testing)
+  * Doesn't uses system timer. Assumes there is no erroneus future writes.
+  */
+struct SimpleSlidingWindow {
+    const aku_Duration           window_size_;
+    aku_Timestamp                top_timestamp_;    //< Largest timestamp ever seen
+    aku_Timestamp                checkpoint_;       //< Last checkpoint timestamp
+
+    SimpleSlidingWindow(aku_Duration window_size)
+        : window_size_(window_size)
+        , top_timestamp_(0ull)
+        , checkpoint_(0ull)
+    {
+    }
+
+    virtual SlidingWindowMatch classify(aku_Timestamp ts) {
+        if (ts < top_timestamp_) {
+            auto delta = top_timestamp_ - ts;
+            if (delta > window_size_) {
+                return SlidingWindowMatch::LATE_WRITE;
+            }
+            return SlidingWindowMatch::PRESENT;
+        }
+        auto point = ts / window_size_;
+        if (point > checkpoint_) {
+            // Create new checkpoint
+            checkpoint_ = point;
+            top_timestamp_ = ts;
+            return SlidingWindowMatch::PRESENT_SW_MOVED;
+        }
+        top_timestamp_ = ts;
+        return SlidingWindowMatch::PRESENT;
+    }
+
+};
+
+
 /** Time-series sequencer.
   * @brief Akumuli can accept unordered time-series (this is the case when
   * clocks of the different time-series sources are slightly out of sync).
@@ -87,9 +137,9 @@ struct Sequencer {
     std::vector<PSortedRun>      runs_;             //< Active sorted runs
     std::vector<PSortedRun>      ready_;            //< Ready to merge
     PSortedRun                   key_;
-    const aku_Duration           window_size_;
-    aku_Timestamp                top_timestamp_;    //< Largest timestamp ever seen
-    aku_Timestamp                checkpoint_;       //< Last checkpoint timestamp
+    //
+    SimpleSlidingWindow          sliding_window_;
+    //
     mutable std::atomic_int      sequence_number_;  //< Flag indicates that merge operation is in progress and
                                                     //< search will return inaccurate results.
                                                     //< If progress_flag_ is odd - merge is in progress if it is
@@ -139,11 +189,6 @@ struct Sequencer {
     std::tuple<aku_Timestamp, int> get_window() const;
 
 private:
-    //! Checkpoint id = ⌊timestamp/window_size⌋
-    aku_Timestamp get_checkpoint_(aku_Timestamp ts) const;
-
-    //! Convert checkpoint id to timestamp
-    aku_Timestamp get_timestamp_(aku_Timestamp cp) const;
 
     // move sorted runs to ready_ collection
     int make_checkpoint_(aku_Timestamp new_checkpoint);
