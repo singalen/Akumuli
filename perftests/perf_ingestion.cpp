@@ -12,6 +12,7 @@
 #include <apr_mmap.h>
 #include <apr_general.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "akumuli.h"
 
@@ -258,7 +259,9 @@ int main(int cnt, const char** args)
         aku_series_to_param_id(db, buffer, buffer + nchars, &sample);
 
         // =timestamp=
-        sample.timestamp = i/1000;
+        timespec tsp;
+        clock_gettime(CLOCK_REALTIME, &tsp);
+        sample.timestamp = tsp.tv_nsec | (static_cast<uint64_t>(tsp.tv_sec) << 32);
 
         // =payload=
         if (i == 1000000ul) {

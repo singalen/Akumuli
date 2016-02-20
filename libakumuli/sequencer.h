@@ -24,6 +24,7 @@
 #include "page.h"
 #include "cursor.h"
 #include "queryprocessor_framework.h"
+#include "datetime.h"
 
 #include <tuple>
 #include <vector>
@@ -125,6 +126,7 @@ struct SimpleSlidingWindowV2 {
         , top_timestamp_(0ull)
         , checkpoint_(0ull)
     {
+        assert(step_size_);
     }
 
     virtual SlidingWindowMatch classify(aku_Timestamp ts) {
@@ -142,6 +144,46 @@ struct SimpleSlidingWindowV2 {
             top_timestamp_ = ts;
             return SlidingWindowMatch::PRESENT_SW_MOVED;
         }
+        top_timestamp_ = ts;
+        return SlidingWindowMatch::PRESENT;
+    }
+};
+
+
+struct TimerBasedSlidingWindow {
+    const aku_Duration window_size_;
+    aku_Timestamp      top_timestamp_;    //< Largest timestamp ever seen
+    aku_Timestamp      checkpoint_;       //< Last checkpoint timestamp
+
+    TimerBasedSlidingWindow(aku_Duration window_size)
+        : window_size_(window_size)
+        , top_timestamp_(0ull)
+        , checkpoint_(get_time() + window_size_/2)
+    {
+    }
+
+    static aku_Timestamp get_time() {
+        auto tp = std::chrono::high_resolution_clock::now();
+        return DateTimeUtil::from_std_chrono(tp);
+    }
+
+    virtual SlidingWindowMatch classify(aku_Timestamp ts) {
+        if (ts < (checkpoint_ - window_size_/2)) {
+            // Late write
+            return SlidingWindowMatch::LATE_WRITE;
+        } else if (ts > checkpoint_) {
+            // Check time
+            auto newtp = get_time() + window_size_/2;
+            if (ts > newtp) {
+                return SlidingWindowMatch::FUTURE_WRITE;
+            } else {
+                // Success
+                checkpoint_ = newtp;
+                top_timestamp_ = ts;
+                return SlidingWindowMatch::PRESENT_SW_MOVED;
+            }
+        }
+        // Success
         top_timestamp_ = ts;
         return SlidingWindowMatch::PRESENT;
     }
@@ -170,7 +212,7 @@ struct Sequencer {
     std::vector<PSortedRun>      ready_;            //< Ready to merge
     PSortedRun                   key_;
     //
-    SimpleSlidingWindowV2        sliding_window_;
+    TimerBasedSlidingWindow      sliding_window_;
     //
     mutable std::atomic_int      sequence_number_;  //< Flag indicates that merge operation is in progress and
                                                     //< search will return inaccurate results.
