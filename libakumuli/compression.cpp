@@ -3,11 +3,72 @@
 
 #include <unordered_map>
 #include <algorithm>
+#include <tmmintrin.h>
 
 namespace Akumuli {
 
 StreamOutOfBounds::StreamOutOfBounds(const char* msg) : std::runtime_error(msg)
 {
+}
+
+/*
+// based on: http://www.alfredklomp.com/programming/sse-intrinsics/
+inline __m128i bswap(__m128i x)
+{
+    // Reverse order of bytes in each 64-bit word.
+
+    return _mm_shuffle_epi8(x,
+                            _mm_set_epi8(
+                                15,  8, 9, 10,
+                                11, 12, 13, 14,
+                                7,  0,  1,  2,
+                                3,  4,  5,  6));
+}
+
+
+uint64_t get_mantissa(double val) {
+    uint64_t bits = *reinterpret_cast<uint64_t*>(&val);
+    const uint64_t mask = 0xFFFFFFFFFFFFF;
+    bits = bits & mask;
+    __m128i arg = _mm_set_epi64x(bits, 0);
+    __m128i res = bswap(arg);
+    return res;
+}
+*/
+
+static uint32_t get_exponent(double val) {
+    uint64_t bits = *reinterpret_cast<uint64_t*>(&val);
+    uint32_t sign = bits >> 63;
+    uint32_t exp = (bits >> 52) & 0x7FF;
+    return exp << 1 | sign;
+}
+
+static uint64_t get_mantissa(double val) {
+    uint64_t bits = *reinterpret_cast<uint64_t*>(&val);
+    const uint64_t mask = 0xFFFFFFFFFFFFF;
+    bits = bits & mask;
+    return ((bits&0x00000000000000FFull)<<(6*8) |
+            (bits&0x000000000000FF00ull)<<(4*8) |
+            (bits&0x0000000000FF0000ull)<<(2*8) |
+            (bits&0x00000000FF000000ull)        |
+            (bits&0x000000FF00000000ull)>>(2*8) |
+            (bits&0x0000FF0000000000ull)>>(4*8) |
+            (bits&0x00FF000000000000ull)>>(6*8));
+}
+
+static double compose_double(uint64_t m, uint32_t exp) {
+    uint64_t sign = exp & 1;
+    exp >>= 1;
+    uint64_t bits =
+            ((m&0x00000000000000FFull)<<(6*8) |
+             (m&0x000000000000FF00ull)<<(4*8) |
+             (m&0x0000000000FF0000ull)<<(2*8) |
+             (m&0x00000000FF000000ull)        |
+             (m&0x000000FF00000000ull)>>(2*8) |
+             (m&0x0000FF0000000000ull)>>(4*8) |
+             (m&0x00FF000000000000ull)>>(6*8));
+    bits |= (uint64_t(exp) << 52) & sign << 63;
+    return *reinterpret_cast<double*>(bits);
 }
 
 struct PrevValPredictor {
