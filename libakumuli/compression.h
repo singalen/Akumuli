@@ -257,6 +257,22 @@ template <class Stream, class TVal> struct ZigZagStreamWriter {
     void   commit() { stream_.commit(); }
 };
 
+template <class TVal> struct ZigZagStreamWriter<Base128StreamWriter, TVal> {
+    Base128StreamWriter& stream_;
+
+    ZigZagStreamWriter(Base128StreamWriter& stream)
+        : stream_(stream) {}
+
+    void put(TVal value) {
+        // TVal should be signed
+        const int shift_width = sizeof(TVal) * 8 - 1;
+        auto      res         = (value << 1) ^ (value >> shift_width);
+        stream_.put(res);
+    }
+    size_t size() const { return stream_.size(); }
+    void   commit() { stream_.commit(); }
+};
+
 template <class Stream, class TVal> struct ZigZagStreamReader {
     Stream stream_;
 
@@ -265,6 +281,20 @@ template <class Stream, class TVal> struct ZigZagStreamReader {
 
     TVal next() {
         auto n = stream_.next();
+        return (n >> 1) ^ (-(n & 1));
+    }
+
+    unsigned char* pos() const { return stream_.pos(); }
+};
+
+template <class TVal> struct ZigZagStreamReader<Base128StreamReader, TVal> {
+    Base128StreamReader& stream_;
+
+    ZigZagStreamReader(Base128StreamReader& stream)
+        : stream_(stream) {}
+
+    TVal next() {
+        auto n = stream_.next<TVal>();
         return (n >> 1) ^ (-(n & 1));
     }
 
@@ -407,6 +437,22 @@ struct CompressionUtil {
     static void decompress_doubles(Base128StreamReader& rstream, size_t numvalues,
                                    std::vector<double>* output);
 
+    /** Compress list of doubles.
+      * @param input array of doubles
+      * @param params array of parameter ids
+      * @param buffer resulting byte array
+      */
+    static size_t compress_doubles2(const std::vector<double>& input, Base128StreamWriter& wstream);
+
+    /** Decompress list of doubles.
+      * @param buffer input data
+      * @param numbloks number of 4bit blocs inside buffer
+      * @param params list of parameter ids
+      * @param output resulting array
+      */
+    static void decompress_doubles2(Base128StreamReader& rstream, size_t numvalues,
+                                    std::vector<double>* output);
+
     /** Convert from chunk order to time order.
       * @note in chunk order all data elements ordered by series id first and then by timestamp,
       * in time order everythin ordered by time first and by id second.
@@ -435,4 +481,12 @@ typedef DeltaStreamWriter<__ZigZagWriter, int64_t> DeltaRLEWriter;
 typedef RLEStreamReader<int64_t> __RLEReader;
 typedef ZigZagStreamReader<__RLEReader, int64_t>   __ZigZagReader;
 typedef DeltaStreamReader<__ZigZagReader, int64_t> DeltaRLEReader;
+
+// int64_t -> Delta -> ZigZag -> Base128
+typedef ZigZagStreamWriter<Base128StreamWriter, int64_t> __ZigZagVByteWriter;
+typedef DeltaStreamWriter<__ZigZagVByteWriter, int64_t>       DeltaVByteWriter;
+
+// Base128 -> ZigZag -> Delta -> int64_t
+typedef ZigZagStreamReader<Base128StreamReader, int64_t> __ZigZagVByteReader;
+typedef DeltaStreamReader<__ZigZagVByteReader, int64_t>       DeltaVByteReader;
 }

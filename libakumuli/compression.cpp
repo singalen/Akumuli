@@ -37,38 +37,61 @@ uint64_t get_mantissa(double val) {
 */
 
 static uint32_t get_exponent(double val) {
-    uint64_t bits = *reinterpret_cast<uint64_t*>(&val);
-    uint32_t sign = bits >> 63;
-    uint32_t exp = (bits >> 52) & 0x7FF;
+    union {
+        double   d;
+        int64_t  i;
+        uint64_t u;
+    } bits;
+    bits.d = val;
+    uint32_t sign = bits.u >> 63;
+    uint32_t exp = (bits.u >> 52) & 0x7FF;
     return exp << 1 | sign;
 }
 
-static uint64_t get_mantissa(double val) {
-    uint64_t bits = *reinterpret_cast<uint64_t*>(&val);
-    const uint64_t mask = 0xFFFFFFFFFFFFF;
-    bits = bits & mask;
-    return ((bits&0x00000000000000FFull)<<(6*8) |
-            (bits&0x000000000000FF00ull)<<(4*8) |
-            (bits&0x0000000000FF0000ull)<<(2*8) |
-            (bits&0x00000000FF000000ull)        |
-            (bits&0x000000FF00000000ull)>>(2*8) |
-            (bits&0x0000FF0000000000ull)>>(4*8) |
-            (bits&0x00FF000000000000ull)>>(6*8));
+static int64_t get_mantissa(double val) {
+    union {
+        double   d;
+        int64_t  i;
+        uint64_t u;
+    } bits;
+    bits.d = val;
+    const uint64_t mask = 0xFFFFFFFFFFFFFull;
+    bits.u = bits.u & mask;
+    /*
+    auto result = ((bits&0x00000000000000FFull)<<(6*8) |
+                   (bits&0x000000000000FF00ull)<<(4*8) |
+                   (bits&0x0000000000FF0000ull)<<(2*8) |
+                   (bits&0x00000000FF000000ull)        |
+                   (bits&0x000000FF00000000ull)>>(2*8) |
+                   (bits&0x0000FF0000000000ull)>>(4*8) |
+                   (bits&0x00FF000000000000ull)>>(6*8));
+                   */
+    // Highest byte will always be zeroed and number will be positive anyway.
+    return bits.i;
 }
 
-static double compose_double(uint64_t m, uint32_t exp) {
+static double compose_double(int64_t m, uint32_t exp) {
+    union {
+        double   d;
+        int64_t  i;
+        uint64_t u;
+    } bits;
     uint64_t sign = exp & 1;
     exp >>= 1;
+    /*
+    uint64_t um = static_cast<uint64_t>(m);
     uint64_t bits =
-            ((m&0x00000000000000FFull)<<(6*8) |
-             (m&0x000000000000FF00ull)<<(4*8) |
-             (m&0x0000000000FF0000ull)<<(2*8) |
-             (m&0x00000000FF000000ull)        |
-             (m&0x000000FF00000000ull)>>(2*8) |
-             (m&0x0000FF0000000000ull)>>(4*8) |
-             (m&0x00FF000000000000ull)>>(6*8));
-    bits |= (uint64_t(exp) << 52) & sign << 63;
-    return *reinterpret_cast<double*>(bits);
+            ((um&0x00000000000000FFull)<<(6*8) |
+             (um&0x000000000000FF00ull)<<(4*8) |
+             (um&0x0000000000FF0000ull)<<(2*8) |
+             (um&0x00000000FF000000ull)        |
+             (um&0x000000FF00000000ull)>>(2*8) |
+             (um&0x0000FF0000000000ull)>>(4*8) |
+             (um&0x00FF000000000000ull)>>(6*8));
+             */
+    bits.u = m;
+    bits.u |= (uint64_t(exp) << 52) | sign << 63;
+    return bits.d;
 }
 
 struct PrevValPredictor {
@@ -279,6 +302,69 @@ void CompressionUtil::decompress_doubles(Base128StreamReader&     rstream,
             *it++ = curr.real;
         } else {
             throw StreamOutOfBounds("can't decode doubles, not enough space inside the out buffer");
+        }
+    }
+}
+
+size_t CompressionUtil::compress_doubles2(std::vector<double> const& input,
+                                          Base128StreamWriter&       wstream)
+{
+    // Each double is decomposed into two parts mantissa and exponent+sign.
+    // Each stream is compressed individually using DeltaRLE+VByte.
+
+    // Mantissa stream
+    {
+        DeltaVByteWriter mstream(wstream);
+        for (size_t ix = 0ul; ix < input.size(); ix++) {
+            double val = input[ix];
+            int64_t mantissa = get_mantissa(val);
+            mstream.put(mantissa);
+        }
+        mstream.commit();
+    }
+
+    // Exponent stream
+    {
+        DeltaRLEWriter estream(wstream);
+        for (size_t ix = 0ul; ix < input.size(); ix++) {
+            double val = input[ix];
+            int64_t exp = (int64_t)get_exponent(val);
+            estream.put(exp);
+        }
+        estream.commit();
+    }
+
+    return input.size();
+}
+
+void CompressionUtil::decompress_doubles2(Base128StreamReader&     rstream,
+                                          size_t                   numvalues,
+                                          std::vector<double>     *output)
+{
+    union Bits {
+        double  d;
+        int64_t i;
+    };
+
+    // Read mantissas
+    {
+        DeltaVByteReader mstream(rstream);
+        for (size_t i = 0ul; i < numvalues; i++) {
+            Bits val;
+            val.i = mstream.next();
+            output->at(i) = val.d;
+        }
+    }
+
+    // Read exponents
+    {
+        DeltaRLEReader estream(rstream);
+        for (size_t i = 0ul; i < numvalues; i++) {
+            uint32_t exp = (uint32_t)estream.next();
+            Bits val;
+            val.d = output->at(i);
+            double res = compose_double(val.i, exp);
+            output->at(i) = res;
         }
     }
 }
