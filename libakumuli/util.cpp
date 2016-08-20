@@ -127,7 +127,9 @@ apr_status_t MemoryMappedFile::map_file() {
                     success_count++;
                     apr_int32_t flags = APR_MMAP_WRITE | APR_MMAP_READ;
                     if (enable_huge_tlb_) {
+#if defined MAP_HUGETLB
                         flags |= MAP_HUGETLB;
+#endif
                     }
                     status_ = apr_mmap_create(&mmap_, fp_, 0, finfo_.size, flags, mem_pool_);
                     if (status_ == APR_SUCCESS)
@@ -375,7 +377,7 @@ bool PageInfo::swapped() {
 
 aku_Status PageInfo::refresh(const void *addr) {
     base_addr_ = align_to_page(addr, page_size_);
-    int error = mincore(const_cast<void*>(base_addr_), len_bytes_, data_.data());
+    int error = mincore(const_cast<void*>(base_addr_), len_bytes_, (char *) data_.data());
     aku_Status status = AKU_SUCCESS;
     switch(error) {
     case EFAULT:
@@ -415,7 +417,7 @@ void PageInfo::fill_mem() {
 std::tuple<bool, aku_Status> page_in_core(const void* addr) {
     auto page_size = get_page_size();
     auto base_addr = align_to_page(addr, page_size);
-    unsigned char val;
+    char val;
     int error = mincore(const_cast<void*>(base_addr), 1, &val);
     aku_Status status = AKU_SUCCESS;
     switch(error) {
