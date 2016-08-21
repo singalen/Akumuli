@@ -53,6 +53,7 @@ add_subdirectory(libakumuli)
 add_subdirectory(akumulid)
 add_subdirectory(perftests)
 add_subdirectory(functests)
+add_subdirectory(samples)
 
 enable_testing()
 add_subdirectory(unittests)
